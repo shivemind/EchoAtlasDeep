@@ -1,2 +1,2 @@
-[build]
-target-dir = "C:\\ProgramData\\rmtide\\target"
+# Local Windows override — not used in CI
+# target-dir is only set via CARGO_TARGET_DIR env var in run.bat

@@ -60,7 +60,7 @@ unicode-segmentation = "1"
 
 # Bit manipulation
 bitvec = "1"
-bitflags = "2"
+bitflags = { version = "2", features = ["serde"] }
 
 # Text / search
 regex = "1"
