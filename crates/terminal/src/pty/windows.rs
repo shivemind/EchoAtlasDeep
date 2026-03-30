@@ -1,6 +1,6 @@
+#![allow(dead_code, unused_imports, unused_variables)]
 /// Windows ConPTY implementation.
 use anyhow::{Context, Result};
-use std::ptr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf};
 use windows::Win32::Foundation::{HANDLE, CloseHandle};
 use windows::Win32::System::Console::{
@@ -8,10 +8,10 @@ use windows::Win32::System::Console::{
     COORD, HPCON,
 };
 use windows::Win32::System::Threading::{
-    CreateProcess, PROCESS_INFORMATION, STARTUPINFOEXW,
+    CreateProcessW, PROCESS_INFORMATION, STARTUPINFOEXW,
     EXTENDED_STARTUPINFO_PRESENT, CREATE_UNICODE_ENVIRONMENT,
     InitializeProcThreadAttributeList, UpdateProcThreadAttribute,
-    PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
+    PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, LPPROC_THREAD_ATTRIBUTE_LIST,
 };
 use tracing::info;
 
@@ -39,12 +39,10 @@ impl Pty {
             Y: config.size.rows as i16,
         };
 
-        // Create the pseudo console.
+        // Create the pseudo console — windows 0.56 returns Result<HPCON>.
         let hpc = unsafe {
-            let mut hpc = HPCON::default();
-            CreatePseudoConsole(size, pipe_read_in, pipe_write_out, 0, &mut hpc)
-                .context("CreatePseudoConsole failed")?;
-            hpc
+            CreatePseudoConsole(size, pipe_read_in, pipe_write_out, 0)
+                .context("CreatePseudoConsole failed")?
         };
 
         // Close pipe ends now owned by ConPTY.
@@ -54,7 +52,7 @@ impl Pty {
         }
 
         // Build STARTUPINFOEXW with PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE.
-        let si = build_startup_info(hpc)?;
+        let (si, _attr_buf) = build_startup_info(hpc)?;
 
         // Spawn the shell process.
         let mut cmd: Vec<u16> = config.shell.encode_utf16().collect();
@@ -62,7 +60,7 @@ impl Pty {
 
         let mut pi = PROCESS_INFORMATION::default();
         unsafe {
-            CreateProcess(
+            CreateProcessW(
                 None,
                 windows::core::PWSTR(cmd.as_mut_ptr()),
                 None, None, false,
@@ -70,7 +68,7 @@ impl Pty {
                 None, None,
                 &si.StartupInfo as *const _ as *const _,
                 &mut pi,
-            ).context("CreateProcess failed")?;
+            ).context("CreateProcessW failed")?;
         }
 
         info!("ConPTY spawned shell (pid={})", pi.dwProcessId);
@@ -109,7 +107,7 @@ impl PtyHandle for Pty {
     }
 
     fn process_id(&self) -> Option<u32> {
-        None // not easily available post-spawn without storing dwProcessId
+        None
     }
 }
 
@@ -136,24 +134,25 @@ fn create_pipe() -> Result<(HANDLE, HANDLE)> {
 }
 
 /// Build STARTUPINFOEXW with the ConPTY attribute attached.
-fn build_startup_info(hpc: HPCON) -> Result<STARTUPINFOEXW> {
-    use windows::Win32::System::Threading::DeleteProcThreadAttributeList;
+/// Returns the struct AND the backing buffer (must stay alive while struct is used).
+fn build_startup_info(hpc: HPCON) -> Result<(STARTUPINFOEXW, Vec<u8>)> {
     let mut si = STARTUPINFOEXW::default();
     si.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
 
     let mut attr_size: usize = 0;
-    unsafe {
-        // First call to get required size.
-        let _ = InitializeProcThreadAttributeList(None, 1, 0, &mut attr_size);
+    let buf = unsafe {
+        // First call: get required size.
+        let _ = InitializeProcThreadAttributeList(
+            LPPROC_THREAD_ATTRIBUTE_LIST::default(), 1, 0, &mut attr_size,
+        );
         let mut buf = vec![0u8; attr_size];
-        let attr_list = buf.as_mut_ptr() as *mut _;
-        InitializeProcThreadAttributeList(
-            windows::Win32::System::Threading::LPPROC_THREAD_ATTRIBUTE_LIST(attr_list),
-            1, 0, &mut attr_size,
-        ).context("InitializeProcThreadAttributeList")?;
+        let attr_list = LPPROC_THREAD_ATTRIBUTE_LIST(buf.as_mut_ptr() as _);
+
+        InitializeProcThreadAttributeList(attr_list, 1, 0, &mut attr_size)
+            .context("InitializeProcThreadAttributeList")?;
 
         UpdateProcThreadAttribute(
-            windows::Win32::System::Threading::LPPROC_THREAD_ATTRIBUTE_LIST(attr_list),
+            attr_list,
             0,
             PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE as usize,
             Some(hpc.0 as *const _),
@@ -161,8 +160,8 @@ fn build_startup_info(hpc: HPCON) -> Result<STARTUPINFOEXW> {
             None, None,
         ).context("UpdateProcThreadAttribute")?;
 
-        si.lpAttributeList =
-            windows::Win32::System::Threading::LPPROC_THREAD_ATTRIBUTE_LIST(attr_list);
-    }
-    Ok(si)
+        si.lpAttributeList = attr_list;
+        buf
+    };
+    Ok((si, buf))
 }
