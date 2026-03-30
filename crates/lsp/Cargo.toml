@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-core = { path = "../core" }
 editor = { path = "../editor" }
 tokio = { workspace = true }
 tokio-util = { workspace = true }

@@ -115,7 +115,7 @@ impl KeyVault {
     /// Delete a key from the OS keychain.
     pub fn delete_key(&self, id: &KeyId) -> anyhow::Result<()> {
         let entry = keyring::Entry::new(SERVICE, &id.account())?;
-        entry.delete_credential()?;
+        entry.delete_password()?;
         self.meta.write().remove(&id.account());
         Ok(())
     }

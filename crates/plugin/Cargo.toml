@@ -9,7 +9,6 @@ wasm = ["wasmtime"]
 lua = ["mlua"]
 
 [dependencies]
-core = { path = "../core" }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }

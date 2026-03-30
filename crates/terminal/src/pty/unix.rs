@@ -1,7 +1,7 @@
 /// Unix PTY implementation using nix + tokio.
 use anyhow::{Context, Result};
 use nix::pty::{openpty, Winsize};
-use nix::unistd::{close, dup2, execvpe, fork, setsid, ForkResult};
+use nix::unistd::{dup2, fork, setsid, ForkResult};
 use std::ffi::CString;
 use std::os::fd::{FromRawFd, IntoRawFd, OwnedFd};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -69,9 +69,15 @@ impl Pty {
                     let _ = std::env::set_current_dir(&dir);
                 }
 
-                execvpe(&shell_c, &argv, &envp)
-                    .expect("execvpe failed");
-                unreachable!()
+                // execvpe is not in nix 0.27 on non-Linux targets; call libc directly.
+                let mut argv_ptrs: Vec<*const libc::c_char> =
+                    argv.iter().map(|s| s.as_ptr()).collect();
+                argv_ptrs.push(std::ptr::null());
+                let mut envp_ptrs: Vec<*const libc::c_char> =
+                    envp.iter().map(|s| s.as_ptr()).collect();
+                envp_ptrs.push(std::ptr::null());
+                libc::execvpe(shell_c.as_ptr(), argv_ptrs.as_ptr(), envp_ptrs.as_ptr());
+                panic!("execvpe failed: {}", std::io::Error::last_os_error());
             }
 
             ForkResult::Parent { child } => {
