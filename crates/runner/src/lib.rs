@@ -9,5 +9,5 @@ pub use task::{TaskDef, TaskRunner, TaskStatus, TaskRecord, LogEntry, LogLevel};
 pub use live_server::LiveServer;
 pub use process_manager::{ProcessManager, ManagedProcess, ProcessStatus};
 pub use env_manager::{EnvManager, EnvFile, EnvEntry};
-pub use http_client::{HttpClient, HttpRequest, HttpResponse, HttpCollection};
+pub use http_client::{HttpClient, HttpRequest, HttpResponse, HttpCollection, HttpMethod};
 pub use db_client::{DbClient, DbConnection, DbResult};

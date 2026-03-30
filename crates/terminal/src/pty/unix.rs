@@ -1,7 +1,7 @@
 /// Unix PTY implementation using libc directly.
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::ffi::CString;
-use std::os::fd::{FromRawFd, IntoRawFd};
+use std::os::fd::FromRawFd;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::io::{ReadHalf, WriteHalf};
 use tracing::info;
@@ -9,13 +9,9 @@ use tracing::info;
 use super::{PtyConfig, PtyHandle, PtySize};
 
 pub struct Pty {
-    /// Async write half to the master PTY fd.
     writer: WriteHalf<tokio::fs::File>,
-    /// Async read half to the master PTY fd.
     reader: ReadHalf<tokio::fs::File>,
-    /// Master fd kept alive for resize.
     master_fd: i32,
-    /// Child PID.
     pid: libc::pid_t,
 }
 
@@ -47,7 +43,6 @@ impl Pty {
             ));
         }
 
-        // Build argv / envp for exec.
         let shell_c = CString::new(config.shell.as_bytes())?;
         let mut argv: Vec<CString> = vec![shell_c.clone()];
         for arg in &config.args {
@@ -69,56 +64,44 @@ impl Pty {
                     std::io::Error::last_os_error()
                 ));
             }
-            0 => {
-                // ── child process ─────────────────────────────────────
+            0 => unsafe {
+                // child process
                 libc::setsid();
-
-                // Connect slave PTY to stdio.
-                libc::dup2(slave_fd, 0); // stdin
-                libc::dup2(slave_fd, 1); // stdout
-                libc::dup2(slave_fd, 2); // stderr
-
-                // Close all other fds.
+                libc::dup2(slave_fd, 0);
+                libc::dup2(slave_fd, 1);
+                libc::dup2(slave_fd, 2);
                 for fd in 3..256 {
                     libc::close(fd);
                 }
-
                 if let Some(dir) = working_dir {
                     let _ = std::env::set_current_dir(&dir);
                 }
-
                 let mut argv_ptrs: Vec<*const libc::c_char> =
                     argv.iter().map(|s| s.as_ptr()).collect();
                 argv_ptrs.push(std::ptr::null());
                 let mut envp_ptrs: Vec<*const libc::c_char> =
                     envp.iter().map(|s| s.as_ptr()).collect();
                 envp_ptrs.push(std::ptr::null());
+                // execvpe searches PATH; not available on macOS libc — use execve there.
+                #[cfg(target_os = "linux")]
                 libc::execvpe(shell_c.as_ptr(), argv_ptrs.as_ptr(), envp_ptrs.as_ptr());
+                #[cfg(not(target_os = "linux"))]
+                libc::execve(shell_c.as_ptr(), argv_ptrs.as_ptr(), envp_ptrs.as_ptr());
                 libc::_exit(1);
-            }
+            },
             child_pid => {
-                // ── parent process ────────────────────────────────────
-                libc::close(slave_fd);
-
+                // parent process
+                unsafe { libc::close(slave_fd) };
                 info!("PTY spawned shell (pid={child_pid})");
-
-                // Wrap master fd in tokio async file.
-                let master_file = tokio::fs::File::from_raw_fd(master_fd);
+                let master_file = unsafe { tokio::fs::File::from_raw_fd(master_fd) };
                 let (reader, writer) = tokio::io::split(master_file);
-
-                Ok(Self {
-                    reader,
-                    writer,
-                    master_fd,
-                    pid: child_pid,
-                })
+                Ok(Self { reader, writer, master_fd, pid: child_pid })
             }
         }
     }
 
     pub async fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
-        let n = self.reader.read(buf).await?;
-        Ok(n)
+        Ok(self.reader.read(buf).await?)
     }
 
     pub async fn write(&mut self, data: &[u8]) -> Result<()> {
@@ -136,18 +119,18 @@ impl PtyHandle for Pty {
             ws_xpixel: size.pixel_width,
             ws_ypixel: size.pixel_height,
         };
-        unsafe {
-            let ret = libc::ioctl(
+        let ret = unsafe {
+            libc::ioctl(
                 self.master_fd,
                 libc::TIOCSWINSZ,
                 &winsize as *const libc::winsize,
-            );
-            if ret != 0 {
-                return Err(anyhow::anyhow!(
-                    "TIOCSWINSZ failed: {}",
-                    std::io::Error::last_os_error()
-                ));
-            }
+            )
+        };
+        if ret != 0 {
+            return Err(anyhow::anyhow!(
+                "TIOCSWINSZ failed: {}",
+                std::io::Error::last_os_error()
+            ));
         }
         Ok(())
     }
