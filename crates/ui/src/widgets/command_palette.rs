@@ -422,7 +422,7 @@ impl Widget for CommandPaletteWidget<'_> {
                     if is_sel {
                         Style::default().fg(Color::White).bg(Color::Rgb(40,50,80)).add_modifier(Modifier::BOLD)
                     } else {
-                        Style::default().fg(Color::LightGray)
+                        Style::default().fg(Color::Gray)
                     }
                 );
             }
