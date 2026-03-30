@@ -1,0 +1,9 @@
+pub mod buffer;
+pub mod view;
+pub mod registry;
+pub mod modal;
+pub mod undo;
+pub mod registers;
+pub mod search;
+pub mod fold;
+pub mod cursor;

@@ -1,0 +1,30 @@
+[package]
+name = "terminal"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+core = { path = "../core" }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+vte = { workspace = true }
+unicode-width = { workspace = true }
+unicode-segmentation = { workspace = true }
+bitvec = { workspace = true }
+parking_lot = { workspace = true }
+bitflags = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.27", features = ["process", "signal"] }
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.56", features = [
+    "Win32_System_Console",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Threading",
+] }

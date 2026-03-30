@@ -1,0 +1,88 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/terminal",
+    "crates/editor",
+    "crates/lsp",
+    "crates/mcp",
+    "crates/ai",
+    "crates/git",
+    "crates/plugin",
+    "crates/ui",
+    "crates/dap",
+    "crates/runner",
+    "bin/rmtide",
+]
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["io-util"] }
+tokio-util = { version = "0.7", features = ["full"] }
+futures = "0.3"
+
+# Error handling
+anyhow = "1"
+thiserror = "1"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Logging / tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# TUI
+ratatui = "0.26"
+crossterm = { version = "0.27", features = ["event-stream"] }
+
+# Terminal / PTY
+vte = "0.13"
+
+# IDs
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# Concurrency
+parking_lot = "0.12"
+dashmap = "5"
+
+# Config
+config = "0.14"
+dirs = "5"
+notify = { version = "6", features = ["macos_kqueue"] }
+
+# Unicode
+unicode-width = "0.1"
+unicode-segmentation = "1"
+
+# Bit manipulation
+bitvec = "1"
+bitflags = "2"
+
+# Text / search
+regex = "1"
+fuzzy-matcher = "0.3"
+walkdir = "2"
+tree-sitter = "0.20"
+
+# AI / HTTP
+async-trait = "0.1"
+reqwest = { version = "0.11", default-features = false, features = ["json", "stream", "rustls-tls"] }
+
+# BYOK key vault
+keyring = "2"
+
+# Git
+git2 = { version = "0.18", default-features = false }
+
+[profile.dev]
+opt-level = 1          # faster compile, still debuggable
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true

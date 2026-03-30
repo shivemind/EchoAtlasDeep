@@ -1,0 +1,15 @@
+#compdef rmtide
+
+_rmtide() {
+  local -a opts
+  opts=(
+    '--mcp[Start MCP server mode]'
+    '--version[Show version]'
+    '--help[Show help]'
+    {-c,--config}'[Path to config file]:config file:_files'
+    '--theme[Color theme name]:theme:(catppuccin-mocha tokyonight gruvbox-dark one-dark)'
+  )
+  _arguments $opts '*:file:_files'
+}
+
+_rmtide "$@"

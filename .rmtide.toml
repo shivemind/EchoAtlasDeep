@@ -1,0 +1,20 @@
+# EchoAtlasDeep project config — overrides user config for this workspace.
+# theme = "catppuccin-mocha"
+# shell = "pwsh"
+# scrollback_lines = 50000
+# fps = 60
+
+[ai]
+backend = "claude"
+# anthropic_api_key = "sk-ant-..."
+# google_api_key = "AIza..."
+# openai_api_key = "sk-..."
+
+[mcp]
+bind_addr = "127.0.0.1"
+# port = 9090
+
+[editor]
+tab_width = 4
+expand_tabs = true
+line_numbers = true
