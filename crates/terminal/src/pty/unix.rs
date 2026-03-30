@@ -1,12 +1,10 @@
-/// Unix PTY implementation using nix + tokio.
+/// Unix PTY implementation using libc directly.
 use anyhow::{Context, Result};
-use nix::pty::{openpty, Winsize};
-use nix::unistd::{dup2, fork, setsid, ForkResult};
 use std::ffi::CString;
-use std::os::fd::{FromRawFd, IntoRawFd, OwnedFd};
+use std::os::fd::{FromRawFd, IntoRawFd};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::io::{ReadHalf, WriteHalf};
-use tracing::{debug, info, warn};
+use tracing::info;
 
 use super::{PtyConfig, PtyHandle, PtySize};
 
@@ -18,23 +16,36 @@ pub struct Pty {
     /// Master fd kept alive for resize.
     master_fd: i32,
     /// Child PID.
-    pid: nix::unistd::Pid,
+    pid: libc::pid_t,
 }
 
 impl Pty {
     pub async fn spawn(config: PtyConfig) -> Result<Self> {
-        let winsize = Winsize {
+        let winsize = libc::winsize {
             ws_row: config.size.rows,
             ws_col: config.size.cols,
             ws_xpixel: config.size.pixel_width,
             ws_ypixel: config.size.pixel_height,
         };
 
-        let pty_res = openpty(Some(&winsize), None)
-            .context("openpty failed")?;
+        let mut master_fd: libc::c_int = -1;
+        let mut slave_fd: libc::c_int = -1;
 
-        let master_fd = pty_res.master.into_raw_fd();
-        let slave_fd  = pty_res.slave.into_raw_fd();
+        let ret = unsafe {
+            libc::openpty(
+                &mut master_fd,
+                &mut slave_fd,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &winsize as *const libc::winsize,
+            )
+        };
+        if ret != 0 {
+            return Err(anyhow::anyhow!(
+                "openpty failed: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
 
         // Build argv / envp for exec.
         let shell_c = CString::new(config.shell.as_bytes())?;
@@ -42,34 +53,40 @@ impl Pty {
         for arg in &config.args {
             argv.push(CString::new(arg.as_bytes())?);
         }
-        let envp: Vec<CString> = config.env
+        let envp: Vec<CString> = config
+            .env
             .iter()
             .map(|(k, v)| CString::new(format!("{k}={v}").as_bytes()))
             .collect::<std::result::Result<_, _>>()?;
 
         let working_dir = config.working_dir.clone();
 
-        match unsafe { fork()? } {
-            ForkResult::Child => {
+        let pid = unsafe { libc::fork() };
+        match pid {
+            -1 => {
+                return Err(anyhow::anyhow!(
+                    "fork failed: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+            0 => {
                 // ── child process ─────────────────────────────────────
-                // Detach from controlling terminal.
-                setsid().ok();
+                libc::setsid();
 
                 // Connect slave PTY to stdio.
-                dup2(slave_fd, 0).ok(); // stdin
-                dup2(slave_fd, 1).ok(); // stdout
-                dup2(slave_fd, 2).ok(); // stderr
+                libc::dup2(slave_fd, 0); // stdin
+                libc::dup2(slave_fd, 1); // stdout
+                libc::dup2(slave_fd, 2); // stderr
 
                 // Close all other fds.
                 for fd in 3..256 {
-                    unsafe { libc::close(fd) };
+                    libc::close(fd);
                 }
 
                 if let Some(dir) = working_dir {
                     let _ = std::env::set_current_dir(&dir);
                 }
 
-                // execvpe is not in nix 0.27 on non-Linux targets; call libc directly.
                 let mut argv_ptrs: Vec<*const libc::c_char> =
                     argv.iter().map(|s| s.as_ptr()).collect();
                 argv_ptrs.push(std::ptr::null());
@@ -77,22 +94,24 @@ impl Pty {
                     envp.iter().map(|s| s.as_ptr()).collect();
                 envp_ptrs.push(std::ptr::null());
                 libc::execvpe(shell_c.as_ptr(), argv_ptrs.as_ptr(), envp_ptrs.as_ptr());
-                panic!("execvpe failed: {}", std::io::Error::last_os_error());
+                libc::_exit(1);
             }
-
-            ForkResult::Parent { child } => {
+            child_pid => {
                 // ── parent process ────────────────────────────────────
-                unsafe { libc::close(slave_fd) };
+                libc::close(slave_fd);
 
-                info!("PTY spawned shell (pid={child})");
+                info!("PTY spawned shell (pid={child_pid})");
 
                 // Wrap master fd in tokio async file.
-                let master_file = unsafe {
-                    tokio::fs::File::from_raw_fd(master_fd)
-                };
+                let master_file = tokio::fs::File::from_raw_fd(master_fd);
                 let (reader, writer) = tokio::io::split(master_file);
 
-                Ok(Self { reader, writer, master_fd, pid: child })
+                Ok(Self {
+                    reader,
+                    writer,
+                    master_fd,
+                    pid: child_pid,
+                })
             }
         }
     }
@@ -111,7 +130,7 @@ impl Pty {
 
 impl PtyHandle for Pty {
     fn resize(&self, size: PtySize) -> Result<()> {
-        let winsize = Winsize {
+        let winsize = libc::winsize {
             ws_row: size.rows,
             ws_col: size.cols,
             ws_xpixel: size.pixel_width,
@@ -121,16 +140,19 @@ impl PtyHandle for Pty {
             let ret = libc::ioctl(
                 self.master_fd,
                 libc::TIOCSWINSZ,
-                &winsize as *const Winsize,
+                &winsize as *const libc::winsize,
             );
             if ret != 0 {
-                return Err(anyhow::anyhow!("TIOCSWINSZ failed: {}", std::io::Error::last_os_error()));
+                return Err(anyhow::anyhow!(
+                    "TIOCSWINSZ failed: {}",
+                    std::io::Error::last_os_error()
+                ));
             }
         }
         Ok(())
     }
 
     fn process_id(&self) -> Option<u32> {
-        Some(self.pid.as_raw() as u32)
+        Some(self.pid as u32)
     }
 }
