@@ -216,8 +216,7 @@ impl PieceTable {
     }
 
     fn rebuild_line_index(&mut self) {
-        self.line_index.clear();
-        self.line_index.push(0);
+        let mut new_index = vec![0usize];
         let mut offset = 0usize;
         for piece in &self.pieces {
             let src = self.byte_src(piece);
@@ -225,10 +224,11 @@ impl PieceTable {
             for &b in slice {
                 offset += 1;
                 if b == b'\n' {
-                    self.line_index.push(offset);
+                    new_index.push(offset);
                 }
             }
         }
+        self.line_index = new_index;
     }
 }
 
