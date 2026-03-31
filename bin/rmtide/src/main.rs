@@ -1086,6 +1086,22 @@ async fn main() -> anyhow::Result<()> {
                                         state.session_picker.open = true;
                                         state.session_picker.mode = ui::widgets::session_manager::SessionMode::SaveAs;
                                     }
+                                    // ── Terminal commands ─────────────────────
+                                    "term" | "terminal" => {
+                                        let new_session_id = app.ids.next_session();
+                                        let pty_cfg = terminal::pty::PtyConfig::default();
+                                        let itx = input_tx.clone();
+                                        let rs = render_state.clone();
+                                        let n = notify.clone();
+                                        tokio::spawn(async move {
+                                            if let Ok(sess_arc) = terminal::session::PtySession::spawn(new_session_id, pty_cfg, itx).await {
+                                                rs.write().terminal_session = Some(sess_arc);
+                                                n.notify_one();
+                                            }
+                                        });
+                                        app.terminal_mode = true;
+                                        render_state.write().mode = "TERMINAL".to_string();
+                                    }
                                     // ── Phase 11 cmdline commands ─────────────
                                     "Tasks" | "tr" => {
                                         app.task_runner_open = !app.task_runner_open;
@@ -2260,11 +2276,30 @@ async fn handle_mcp_command(
             }
         }
         McpEditorCommand::NewTerminal { cwd, shell } => {
-            // Stub: terminal pane creation handled by main PTY subsystem
-            notify.notify_one();
+            let new_session_id = app.ids.next_session();
+            let mut pty_cfg = terminal::pty::PtyConfig::default();
+            if let Some(s) = shell { pty_cfg.shell = s; }
+            if let Some(c) = cwd { pty_cfg.working_dir = Some(std::path::PathBuf::from(c)); }
+            match terminal::session::PtySession::spawn(new_session_id, pty_cfg, input_tx.clone()).await {
+                Ok(sess_arc) => {
+                    app.extra_terminal_sessions.push((new_session_id, sess_arc.clone()));
+                    app.active_terminal_idx = app.extra_terminal_sessions.len();
+                    render_state.write().terminal_session = Some(sess_arc);
+                    notify.notify_one();
+                }
+                Err(e) => tracing::warn!("MCP NewTerminal failed: {e}"),
+            }
         }
-        McpEditorCommand::SendTerminalInput { pane_id, text } => {
-            // Stub: terminal input forwarding handled by PTY subsystem
+        McpEditorCommand::SendTerminalInput { pane_id: _, text } => {
+            // Route text to the active terminal session
+            let target = if app.active_terminal_idx == 0 {
+                app.terminal_session.clone()
+            } else {
+                app.extra_terminal_sessions.get(app.active_terminal_idx - 1).map(|(_, s)| s.clone())
+            };
+            if let Some(sess_arc) = target {
+                sess_arc.lock().write_input(text.into_bytes());
+            }
         }
     }
 }
