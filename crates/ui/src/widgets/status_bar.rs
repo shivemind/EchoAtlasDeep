@@ -39,29 +39,23 @@ impl<'a> Widget for StatusBar<'a> {
         let left = format!("{mode_str}{file_str}{branch_str}");
         let right = format!("{backend_str}{pos_str}");
 
-        // Fill the entire status bar row.
-        let full = format!("{:<width$}{:>rw$}",
-            left,
-            right,
-            width = area.width as usize,
-            rw = right.len(),
-        );
-        let line = Line::from(vec![
-            Span::styled(full.clone(), info_style),
-        ]);
+        // Build a string that fills exactly area.width chars: left flush, right flush.
+        let w = area.width as usize;
+        let right_len = right.len().min(w);
+        let left_w = w.saturating_sub(right_len);
+        let full = format!("{:<lw$}{}", &left[..left.len().min(left_w)], right, lw = left_w);
 
-        // Overwrite mode badge.
-        if let Some(cell) = buf.cell_mut((area.x, area.y)) {
-            // Just render the whole line then re-apply mode badge color.
-        }
-        let _ = ratatui::widgets::Paragraph::new(line)
-            .style(info_style);
-
-        // Render manually for simplicity.
+        // Render character by character so we can colour the mode badge differently.
         for (x_off, ch) in full.chars().enumerate() {
             let x = area.x + x_off as u16;
-            if x >= area.x + area.width { break; }
-            let style = if x_off < mode_str.len() { mode_style } else { info_style };
+            if x_off >= w { break; }
+            let style = if x_off < mode_str.len() {
+                mode_style
+            } else if x_off >= left_w {
+                right_style
+            } else {
+                info_style
+            };
             buf[(x, area.y)].set_char(ch).set_style(style);
         }
     }

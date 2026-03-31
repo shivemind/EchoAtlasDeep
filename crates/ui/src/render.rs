@@ -343,10 +343,66 @@ pub fn spawn_render_task(
                     if clipped.width == 0 || clipped.height == 0 {
                         continue;
                     }
+                    // Title: file name when editing, nothing when empty
+                    let border_title: Option<&str> = if editor_lines.is_some() {
+                        editor_file.as_deref().or(Some("editing"))
+                    } else {
+                        None
+                    };
                     frame.render_widget(
-                        PaneBorder { title: Some(&format!("{pane_id}")), focused: is_focused },
+                        PaneBorder { title: border_title, focused: is_focused },
                         clipped,
                     );
+
+                    // Welcome screen when no file is open
+                    if editor_lines.is_none() && is_focused {
+                        let inner = ratatui::layout::Rect {
+                            x: clipped.x + 1,
+                            y: clipped.y + 1,
+                            width: clipped.width.saturating_sub(2),
+                            height: clipped.height.saturating_sub(2),
+                        };
+                        if inner.width >= 30 && inner.height >= 8 {
+                            use ratatui::text::{Line, Span};
+                            use ratatui::widgets::Paragraph;
+                            use ratatui::layout::Alignment;
+                            use ratatui::style::{Color, Modifier, Style};
+                            let title_st = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+                            let key_st   = Style::default().fg(Color::Yellow);
+                            let desc_st  = Style::default().fg(Color::White);
+                            let dim_st   = Style::default().fg(Color::DarkGray);
+                            let sep_st   = Style::default().fg(Color::DarkGray);
+                            let lines_w = vec![
+                                Line::from(""),
+                                Line::from(Span::styled("rmtide", title_st)),
+                                Line::from(Span::styled("modal terminal IDE", dim_st)),
+                                Line::from(""),
+                                Line::from(vec![Span::styled(":e <path>  ", key_st), Span::styled("open file", desc_st)]),
+                                Line::from(vec![Span::styled("Ctrl+P     ", key_st), Span::styled("command palette", desc_st)]),
+                                Line::from(vec![Span::styled("Alt+E      ", key_st), Span::styled("file tree", desc_st)]),
+                                Line::from(vec![Span::styled("Alt+A      ", key_st), Span::styled("AI agent", desc_st)]),
+                                Line::from(vec![Span::styled("Alt+T      ", key_st), Span::styled("task runner", desc_st)]),
+                                Line::from(vec![Span::styled("Ctrl+Q     ", key_st), Span::styled("quit", desc_st)]),
+                                Line::from(""),
+                                Line::from(vec![
+                                    Span::styled("i", key_st), Span::styled(" → INSERT  ", sep_st),
+                                    Span::styled("Esc", key_st), Span::styled(" → NORMAL  ", sep_st),
+                                    Span::styled(":", key_st), Span::styled(" → COMMAND", sep_st),
+                                ]),
+                            ];
+                            let content_h = lines_w.len() as u16;
+                            let top_pad = inner.height.saturating_sub(content_h) / 2;
+                            let welcome_area = ratatui::layout::Rect {
+                                y: inner.y + top_pad,
+                                height: content_h.min(inner.height.saturating_sub(top_pad)),
+                                ..inner
+                            };
+                            frame.render_widget(
+                                Paragraph::new(lines_w).alignment(Alignment::Center),
+                                welcome_area,
+                            );
+                        }
+                    }
 
                     // Render editor content if we have display data
                     if let Some(ref lines) = editor_lines {
