@@ -2,7 +2,7 @@
 //! Central application state owned by the main task.
 use std::sync::Arc;
 
-use core::ids::{BufferId, IdGen};
+use rmcore::ids::{BufferId, IdGen};
 use editor::cursor::MultiCursor;
 use editor::fold::FoldState;
 use editor::modal::{EditorCommand, ModalState, SearchDir, VisualKind};

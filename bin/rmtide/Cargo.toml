@@ -8,7 +8,7 @@ name = "rmtide"
 path = "src/main.rs"
 
 [dependencies]
-core    = { path = "../../crates/core" }
+rmcore  = { package = "core", path = "../../crates/core" }
 terminal = { path = "../../crates/terminal" }
 editor  = { path = "../../crates/editor" }
 lsp     = { path = "../../crates/lsp" }

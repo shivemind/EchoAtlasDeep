@@ -47,7 +47,7 @@ impl<'a> Widget for StatusBar<'a> {
             rw = right.len(),
         );
         let line = Line::from(vec![
-            Span::styled(full, info_style),
+            Span::styled(full.clone(), info_style),
         ]);
 
         // Overwrite mode badge.

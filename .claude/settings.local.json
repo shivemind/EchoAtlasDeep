@@ -124,7 +124,20 @@
       "Bash(gh auth:*)",
       "Bash(git init:*)",
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(gh repo:*)",
+      "Bash(git tag:*)",
+      "Bash(git push:*)",
+      "Bash(gh run:*)",
+      "Bash(wc -l C:UsersshiveDesktopEchoAtlasDeepcrates/**/src/*.rs)",
+      "Bash(xargs wc:*)",
+      "Bash(find C:UsersshiveDesktopEchoAtlasDeepcrates C:UsersshiveDesktopEchoAtlasDeepbin -type f -name *.rs -exec wc -l {} +)",
+      "Bash(git -C \"C:\\\\Users\\\\shive\\\\Desktop\\\\EchoAtlasDeep\" log --oneline)",
+      "Bash(grep:*)",
+      "Bash(python -c \"import sys,json; [print\\(json.loads\\(l\\)[''''message''''][''''message'''']\\) for l in sys.stdin if l.strip\\(\\).startswith\\(''''{''''\\) and json.loads\\(l\\).get\\(''''reason''''\\)==''''compiler-message'''' and json.loads\\(l\\)[''''message''''][''''level'''']==''''error'''']\")",
+      "Bash(cargo update:*)",
+      "Bash(cd:*)",
+      "Bash(grep -A3 '^name = \"\"\"\"ratatui\"\"\"\"' C:/Users/shive/Desktop/EchoAtlasDeep/Cargo.lock)"
     ]
   }
 }

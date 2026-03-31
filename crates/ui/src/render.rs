@@ -199,7 +199,8 @@ impl HostTerminal {
     }
 
     pub fn size(&self) -> anyhow::Result<ratatui::layout::Rect> {
-        Ok(self.terminal.size()?)
+        let size = self.terminal.size()?;
+        Ok(ratatui::layout::Rect::new(0, 0, size.width, size.height))
     }
 }
 
@@ -406,8 +407,8 @@ pub fn spawn_render_task(
                 // It renders in the last pane area as an overlay (simple approach).
                 if let Some(ref snap) = chat_snapshot {
                     // Find largest pane rect to render chat in
-                    if let Some((_, &rect)) = pane_rects.iter().max_by_key(|(_, r)| r.area()) {
-                        let clipped = clip_rect(rect, main_area);
+                    if let Some((_, rect)) = pane_rects.iter().max_by_key(|(_, r)| r.area()) {
+                        let clipped = clip_rect(*rect, main_area);
                         if clipped.width > 4 && clipped.height > 4 {
                             let inner = ratatui::layout::Rect {
                                 x: clipped.x + 1,

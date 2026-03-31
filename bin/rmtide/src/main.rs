@@ -7,9 +7,9 @@ use parking_lot::RwLock;
 use tokio::sync::Notify;
 use tracing::info;
 
-use core::bus::EventBus;
-use core::event::AppEvent;
-use core::ids::IdGen;
+use rmcore::bus::EventBus;
+use rmcore::event::AppEvent;
+use rmcore::ids::IdGen;
 
 use ui::layout::{LayoutTree, SplitDir};
 use ui::pane::{Pane, PaneKind};
@@ -312,7 +312,7 @@ async fn main() -> anyhow::Result<()> {
                 break;
             }
             Ok(AppEvent::KeyInput(key)) => {
-                use core::event::{KeyCode, KeyModifiers};
+                use rmcore::event::{KeyCode, KeyModifiers};
 
                 // Ctrl-Q always quits
                 if key.code == KeyCode::Char('q')
@@ -335,7 +335,7 @@ async fn main() -> anyhow::Result<()> {
 
                 // Intercept model picker navigation
                 if app.model_picker_open {
-                    use core::event::KeyCode;
+                    use rmcore::event::KeyCode;
                     match key.code {
                         KeyCode::Up => {
                             if app.model_picker_selected > 0 {
@@ -377,7 +377,7 @@ async fn main() -> anyhow::Result<()> {
 
                 // ── Phase 9: global keybinds ─────────────────────────────────
                 {
-                    use core::event::{KeyCode, KeyModifiers};
+                    use rmcore::event::{KeyCode, KeyModifiers};
                     // \A — toggle agent panel (Backslash then A, or leader+A)
                     // We detect as Alt+A for simplicity
                     if key.code == KeyCode::Char('A') && key.modifiers.contains(KeyModifiers::ALT) {
@@ -1680,9 +1680,9 @@ async fn main() -> anyhow::Result<()> {
 
 #[allow(dead_code, unused_variables)]
 fn handle_global_key(
-    _key: &core::event::KeyEvent,
+    _key: &rmcore::event::KeyEvent,
     _app: &mut AppState,
-    _bus: &core::bus::EventBus,
+    _bus: &rmcore::bus::EventBus,
 ) -> Vec<EditorCommand> {
     Vec::new()
 }
@@ -1694,7 +1694,7 @@ async fn handle_palette_command(
     app: &mut AppState,
     render_state: &Arc<RwLock<RenderState>>,
     notify: &tokio::sync::Notify,
-    bus: &core::bus::EventBus,
+    bus: &rmcore::bus::EventBus,
 ) {
     match id {
         "editor.save" => {
@@ -1711,7 +1711,7 @@ async fn handle_palette_command(
             }
         }
         "editor.quit" | "editor.force_quit" => {
-            let _ = bus.sender().send(core::event::AppEvent::Quit);
+            let _ = bus.sender().send(rmcore::event::AppEvent::Quit);
         }
         "file.open" | "file.new" => {
             let root = app.workspace_root.clone();

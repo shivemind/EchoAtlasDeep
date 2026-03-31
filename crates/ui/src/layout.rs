@@ -125,8 +125,9 @@ fn collect_ids(node: &LayoutNode, out: &mut Vec<PaneId>) {
 fn split_node(node: &mut LayoutNode, target: PaneId, dir: SplitDir, new_pane: Pane) {
     match node {
         LayoutNode::Leaf(pane) if pane.id == target => {
+            let pane_id = pane.id;
             let old = std::mem::replace(node, LayoutNode::Leaf(Pane::new(
-                pane.id, PaneKind::Empty // temporary
+                pane_id, PaneKind::Empty // temporary
             )));
             if let LayoutNode::Leaf(original_pane) = old {
                 *node = LayoutNode::Split {

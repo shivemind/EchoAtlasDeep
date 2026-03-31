@@ -103,7 +103,7 @@ impl Widget for MinimapWidget<'_> {
             let has_git = self.state.git_changed_lines.iter()
                 .any(|&l| l >= file_line_start && l < file_line_end);
 
-            let is_in_viewport = row as u16 >= vp_start_row && row as u16 < vp_end_row;
+            let is_in_viewport = (row as u16) >= vp_start_row && (row as u16) < vp_end_row;
 
             let bg = if is_in_viewport {
                 Color::Rgb(40, 40, 60)

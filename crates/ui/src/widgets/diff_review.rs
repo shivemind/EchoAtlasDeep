@@ -94,7 +94,7 @@ impl DiffReviewState {
                     }],
                 });
             } else if let Some(ref mut hunk) = current_hunk {
-                let (kind, content) = if line.starts_with('+') {
+                if line.starts_with('+') {
                     let dl = DiffLine {
                         kind: DiffLineKind::Added,
                         content: line[1..].to_string(),
@@ -103,7 +103,6 @@ impl DiffReviewState {
                     };
                     new_line += 1;
                     hunk.lines.push(dl);
-                    continue;
                 } else if line.starts_with('-') {
                     let dl = DiffLine {
                         kind: DiffLineKind::Removed,
@@ -113,7 +112,6 @@ impl DiffReviewState {
                     };
                     old_line += 1;
                     hunk.lines.push(dl);
-                    continue;
                 } else {
                     let dl = DiffLine {
                         kind: DiffLineKind::Context,
@@ -128,8 +126,7 @@ impl DiffReviewState {
                     old_line += 1;
                     new_line += 1;
                     hunk.lines.push(dl);
-                    continue;
-                };
+                }
             }
         }
 

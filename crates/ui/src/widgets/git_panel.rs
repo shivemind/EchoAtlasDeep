@@ -209,7 +209,7 @@ impl<'a> Widget for GitPanelWidget<'a> {
         }
 
         let list = List::new(items);
-        list.render(inner, buf);
+        Widget::render(list, inner, buf);
     }
 }
 

@@ -217,7 +217,7 @@ impl Widget for FileTreeWidget<'_> {
         // Title
         let title_x = area.x + 1;
         for (i, ch) in title.chars().enumerate() {
-            if title_x + i as u16 < area.x + area.width.saturating_sub(1) {
+            if title_x + (i as u16) < area.x + area.width.saturating_sub(1) {
                 buf.get_mut(title_x + i as u16, area.y)
                     .set_char(ch)
                     .set_style(Style::default().fg(Color::White).add_modifier(Modifier::BOLD));
