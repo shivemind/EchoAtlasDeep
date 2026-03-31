@@ -155,6 +155,9 @@ pub struct AppState {
     pub collab_open: bool,
     pub pair_programmer_active: bool,
     pub command_palette_open: bool,
+    // Terminal emulator
+    pub terminal_session: Option<std::sync::Arc<parking_lot::Mutex<terminal::session::PtySession>>>,
+    pub terminal_mode: bool,
 }
 
 impl AppState {
@@ -299,6 +302,9 @@ impl AppState {
             collab_open: false,
             pair_programmer_active: false,
             command_palette_open: false,
+            // Terminal emulator — populated after spawn in main.rs
+            terminal_session: None,
+            terminal_mode: false,
         }
     }
 

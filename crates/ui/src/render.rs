@@ -173,6 +173,8 @@ pub struct RenderState {
     pub collab_state: crate::widgets::collab_panel::CollabState,
     pub pair_programmer: crate::widgets::pair_programmer::PairProgrammerState,
     pub command_palette: crate::widgets::command_palette::CommandPaletteState,
+    // Terminal emulator session
+    pub terminal_session: Option<std::sync::Arc<parking_lot::Mutex<terminal::session::PtySession>>>,
 }
 
 /// RAII guard: enables raw mode + alternate screen on construction, restores on drop.
@@ -258,6 +260,9 @@ pub fn spawn_render_task(
             let focused    = state_snap.layout.focused;
             let mode       = state_snap.mode.clone();
             let backend    = state_snap.backend_name.clone();
+
+            // Snapshot terminal session Arc (cheap clone of Arc)
+            let terminal_session = state_snap.terminal_session.clone();
 
             // Snapshot editor display data
             let editor_lines: Option<Vec<String>> = state_snap.editor_display.as_ref().map(|e| e.lines.clone());
@@ -353,6 +358,25 @@ pub fn spawn_render_task(
                         PaneBorder { title: border_title, focused: is_focused },
                         clipped,
                     );
+
+                    // Render terminal pane if session is available and focused
+                    if let Some(ref sess_arc) = terminal_session {
+                        if editor_lines.is_none() {
+                            if let Some(sess) = sess_arc.try_lock() {
+                                let inner = ratatui::layout::Rect {
+                                    x: clipped.x + 1,
+                                    y: clipped.y + 1,
+                                    width: clipped.width.saturating_sub(2),
+                                    height: clipped.height.saturating_sub(2),
+                                };
+                                frame.render_widget(
+                                    TerminalPaneWidget { screen: &sess.screen, focused: is_focused },
+                                    inner,
+                                );
+                                continue;
+                            }
+                        }
+                    }
 
                     // Welcome screen when no file is open
                     if editor_lines.is_none() && is_focused {

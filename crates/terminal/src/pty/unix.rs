@@ -9,8 +9,8 @@ use tracing::info;
 use super::{PtyConfig, PtyHandle, PtySize};
 
 pub struct Pty {
-    writer: WriteHalf<tokio::fs::File>,
-    reader: ReadHalf<tokio::fs::File>,
+    writer: Option<WriteHalf<tokio::fs::File>>,
+    reader: Option<ReadHalf<tokio::fs::File>>,
     master_fd: i32,
     pid: libc::pid_t,
 }
@@ -95,19 +95,30 @@ impl Pty {
                 info!("PTY spawned shell (pid={child_pid})");
                 let master_file = unsafe { tokio::fs::File::from_raw_fd(master_fd) };
                 let (reader, writer) = tokio::io::split(master_file);
-                Ok(Self { reader, writer, master_fd, pid: child_pid })
+                Ok(Self { reader: Some(reader), writer: Some(writer), master_fd, pid: child_pid })
             }
         }
     }
 
     pub async fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
-        Ok(self.reader.read(buf).await?)
+        Ok(self.reader.as_mut().ok_or_else(|| anyhow::anyhow!("reader taken"))?.read(buf).await?)
     }
 
     pub async fn write(&mut self, data: &[u8]) -> Result<()> {
-        self.writer.write_all(data).await?;
-        self.writer.flush().await?;
+        let w = self.writer.as_mut().ok_or_else(|| anyhow::anyhow!("writer taken"))?;
+        w.write_all(data).await?;
+        w.flush().await?;
         Ok(())
+    }
+
+    /// Take the reader half out of this Pty (for use in a reader task).
+    pub fn take_reader(&mut self) -> Option<ReadHalf<tokio::fs::File>> {
+        self.reader.take()
+    }
+
+    /// Take the writer half out of this Pty (for use in a writer task).
+    pub fn take_writer(&mut self) -> Option<WriteHalf<tokio::fs::File>> {
+        self.writer.take()
     }
 }
 

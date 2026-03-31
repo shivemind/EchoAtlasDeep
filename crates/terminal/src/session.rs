@@ -1,6 +1,8 @@
 /// PtySession wires together Pty + ScreenBuffer + VtParser + VtProcessor.
 /// One session per terminal pane.
 use anyhow::Result;
+use std::sync::Arc;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
@@ -22,6 +24,8 @@ pub struct PtySession {
     parser: VtParser,
     /// Send PTY input (user keystrokes) to the writer task.
     input_tx: mpsc::Sender<Vec<u8>>,
+    /// Hold the Pty so Drop closes it when session ends.
+    _pty: Arc<parking_lot::Mutex<Pty>>,
 }
 
 impl PtySession {
@@ -31,43 +35,86 @@ impl PtySession {
         id: SessionId,
         config: PtyConfig,
         event_tx: tokio::sync::broadcast::Sender<AppEvent>,
-    ) -> Result<Self> {
+    ) -> Result<Arc<parking_lot::Mutex<Self>>> {
         let cols = config.size.cols as usize;
         let rows = config.size.rows as usize;
 
         let mut pty = Pty::spawn(config).await?;
 
+        // Take I/O halves before wrapping pty in Arc<Mutex>.
+        let reader = pty.take_reader()
+            .ok_or_else(|| anyhow::anyhow!("PTY reader already taken"))?;
+        let writer = pty.take_writer()
+            .ok_or_else(|| anyhow::anyhow!("PTY writer already taken"))?;
+
         // Channel for user input → PTY writer task.
         let (input_tx, mut input_rx) = mpsc::channel::<Vec<u8>>(64);
 
-        // ── Reader task: PTY → screen buffer ──────────────────────────────────
-        // We can't move self into the task before constructing it, so we use a
-        // second channel to send parsed bytes back to the session owner.
-        // Instead, we run reading inline and use a oneshot to hand back the pty
-        // split halves. For simplicity here we use an Arc<Mutex<ScreenBuffer>>.
-        //
-        // Full architecture: the session owns screen/processor; the reader task
-        // owns the pty read half and a clone of the Arc. On each read it calls
-        // processor.process() then signals dirty via event_tx.
-        //
-        // This simplified bootstrap yields the full design in session_task.rs.
+        let pty_arc = Arc::new(parking_lot::Mutex::new(pty));
 
-        debug!("PtySession {id} spawned");
-
-        Ok(Self {
+        let session = Arc::new(parking_lot::Mutex::new(Self {
             id,
             screen: ScreenBuffer::new(cols, rows, SCROLLBACK),
             processor: VtProcessor::new(rows),
             parser: VtParser::new(),
             input_tx,
-        })
+            _pty: pty_arc,
+        }));
+
+        // ── Writer task: input_rx → PTY ───────────────────────────────────────
+        {
+            let mut writer = writer;
+            tokio::spawn(async move {
+                while let Some(data) = input_rx.recv().await {
+                    if let Err(e) = writer.write_all(&data).await {
+                        warn!("PTY writer error: {e}");
+                        break;
+                    }
+                    let _ = writer.flush().await;
+                }
+            });
+        }
+
+        // ── Reader task: PTY → screen buffer ─────────────────────────────────
+        {
+            let session_arc = Arc::clone(&session);
+            let pane_id = core::ids::PaneId::new(id.0); // reuse numeric id as PaneId
+            let mut reader = reader;
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; READ_BUF];
+                loop {
+                    match reader.read(&mut buf).await {
+                        Ok(0) => {
+                            debug!("PTY reader EOF");
+                            break;
+                        }
+                        Ok(n) => {
+                            let bytes = &buf[..n];
+                            {
+                                let mut sess = session_arc.lock();
+                                sess.ingest(bytes);
+                            }
+                            let _ = event_tx.send(AppEvent::TerminalDirty(pane_id));
+                        }
+                        Err(e) => {
+                            warn!("PTY reader error: {e}");
+                            break;
+                        }
+                    }
+                }
+            });
+        }
+
+        debug!("PtySession {id} spawned with reader/writer tasks");
+        Ok(session)
     }
 
     /// Write user input (keystrokes) to the PTY.
-    pub async fn write_input(&self, data: Vec<u8>) -> Result<()> {
-        self.input_tx.send(data).await
-            .map_err(|_| anyhow::anyhow!("PTY input channel closed"))?;
-        Ok(())
+    pub fn write_input(&self, data: Vec<u8>) {
+        // Use try_send to avoid blocking; drop if channel full.
+        if let Err(e) = self.input_tx.try_send(data) {
+            warn!("PTY input channel error: {e}");
+        }
     }
 
     /// Process raw bytes from the PTY and update the screen.

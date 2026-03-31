@@ -20,8 +20,8 @@ use super::{PtyConfig, PtyHandle, PtySize};
 pub struct Pty {
     hpc: HPCON,
     process: HANDLE,
-    reader: ReadHalf<tokio::fs::File>,
-    writer: WriteHalf<tokio::fs::File>,
+    reader: Option<ReadHalf<tokio::fs::File>>,
+    writer: Option<WriteHalf<tokio::fs::File>>,
 }
 
 unsafe impl Send for Pty {}
@@ -83,16 +83,26 @@ impl Pty {
         let (reader, _) = tokio::io::split(read_file);
         let (_, writer) = tokio::io::split(write_file);
 
-        Ok(Self { hpc, process: pi.hProcess, reader, writer })
+        Ok(Self { hpc, process: pi.hProcess, reader: Some(reader), writer: Some(writer) })
     }
 
     pub async fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
-        Ok(self.reader.read(buf).await?)
+        Ok(self.reader.as_mut().ok_or_else(|| anyhow::anyhow!("reader taken"))?.read(buf).await?)
     }
 
     pub async fn write(&mut self, data: &[u8]) -> Result<()> {
-        self.writer.write_all(data).await?;
+        self.writer.as_mut().ok_or_else(|| anyhow::anyhow!("writer taken"))?.write_all(data).await?;
         Ok(())
+    }
+
+    /// Take the reader half out of this Pty (for use in a reader task).
+    pub fn take_reader(&mut self) -> Option<ReadHalf<tokio::fs::File>> {
+        self.reader.take()
+    }
+
+    /// Take the writer half out of this Pty (for use in a writer task).
+    pub fn take_writer(&mut self) -> Option<WriteHalf<tokio::fs::File>> {
+        self.writer.take()
     }
 }
 

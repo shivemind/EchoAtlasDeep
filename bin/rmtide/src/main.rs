@@ -67,8 +67,9 @@ async fn main() -> anyhow::Result<()> {
     // ── App state ────────────────────────────────────────────────────────────
     let mut ids = IdGen::default();
 
-    // ── Initial layout: one empty pane ───────────────────────────────────────
-    let first_pane = Pane::new(ids.next_pane(), PaneKind::Empty);
+    // ── Initial layout: one terminal pane ────────────────────────────────────
+    let terminal_session_id = ids.next_session();
+    let first_pane = Pane::new(ids.next_pane(), PaneKind::Terminal { session_id: terminal_session_id });
     let layout = LayoutTree::new(first_pane);
 
     let render_state = Arc::new(RwLock::new(RenderState {
@@ -186,12 +187,32 @@ async fn main() -> anyhow::Result<()> {
         collab_state: ui::widgets::collab_panel::CollabState::new(),
         pair_programmer: ui::widgets::pair_programmer::PairProgrammerState::new(),
         command_palette: ui::widgets::command_palette::CommandPaletteState::new(),
+        terminal_session: None,
     }));
 
     let notify = Arc::new(Notify::new());
 
     // ── App state ────────────────────────────────────────────────────────────
     let mut app = AppState::new(config);
+
+    // ── Terminal emulator ────────────────────────────────────────────────────
+    {
+        let pty_config = terminal::pty::PtyConfig::default();
+        match terminal::session::PtySession::spawn(
+            terminal_session_id,
+            pty_config,
+            input_tx.clone(),
+        ).await {
+            Ok(sess_arc) => {
+                app.terminal_session = Some(sess_arc.clone());
+                app.terminal_mode = true;
+                render_state.write().terminal_session = Some(sess_arc);
+            }
+            Err(e) => {
+                tracing::warn!("Failed to spawn terminal session: {e}");
+            }
+        }
+    }
 
     // ── MCP Server ───────────────────────────────────────────────────────────
     let (mcp_bridge, mut mcp_cmd_rx) = mcp::create_bridge(app.workspace_root.clone());
@@ -330,6 +351,27 @@ async fn main() -> anyhow::Result<()> {
                     state.layout.focus_next();
                     drop(state);
                     notify.notify_one();
+                    continue;
+                }
+
+                // Ctrl-T toggles terminal mode on/off
+                if key.code == KeyCode::Char('t')
+                    && key.modifiers.contains(KeyModifiers::CONTROL)
+                {
+                    app.terminal_mode = !app.terminal_mode;
+                    let mode_str = if app.terminal_mode { "TERMINAL" } else { "NORMAL" };
+                    render_state.write().mode = mode_str.to_string();
+                    notify.notify_one();
+                    continue;
+                }
+
+                // In terminal mode, route keys to the PTY (except global shortcuts above)
+                if app.terminal_mode {
+                    if let Some(ref sess_arc) = app.terminal_session {
+                        if let Some(bytes) = key_to_bytes(&key) {
+                            sess_arc.lock().write_input(bytes);
+                        }
+                    }
                     continue;
                 }
 
@@ -771,6 +813,11 @@ async fn main() -> anyhow::Result<()> {
                                         // Info messages displayed via ai_status for now
                                     }
                                 }
+                            }
+                            // If a file was opened, switch out of terminal mode.
+                            if app.active_editor.is_some() && app.terminal_mode {
+                                app.terminal_mode = false;
+                                render_state.write().mode = "NORMAL".to_string();
                             }
                             // Phase 9 — sync open/close state to RenderState
                             {
@@ -1933,5 +1980,44 @@ async fn handle_mcp_command(
         McpEditorCommand::SendTerminalInput { pane_id, text } => {
             // Stub: terminal input forwarding handled by PTY subsystem
         }
+    }
+}
+
+/// Convert a KeyEvent to the VT byte sequence the shell expects.
+fn key_to_bytes(key: &rmcore::event::KeyEvent) -> Option<Vec<u8>> {
+    use rmcore::event::{KeyCode, KeyModifiers};
+    match &key.code {
+        KeyCode::Char(c) => {
+            if key.modifiers.contains(KeyModifiers::CONTROL) {
+                let b = (*c as u8).to_ascii_lowercase();
+                if b >= b'a' && b <= b'z' {
+                    Some(vec![b - b'a' + 1])
+                } else if b >= b'@' && b <= b'_' {
+                    Some(vec![b - b'@'])
+                } else {
+                    None
+                }
+            } else if key.modifiers.contains(KeyModifiers::ALT) {
+                let mut v = c.to_string().into_bytes();
+                v.insert(0, 0x1b);
+                Some(v)
+            } else {
+                Some(c.to_string().into_bytes())
+            }
+        }
+        KeyCode::Enter     => Some(b"\r".to_vec()),
+        KeyCode::Backspace => Some(b"\x7f".to_vec()),
+        KeyCode::Tab       => Some(b"\t".to_vec()),
+        KeyCode::Escape    => Some(b"\x1b".to_vec()),
+        KeyCode::Up        => Some(b"\x1b[A".to_vec()),
+        KeyCode::Down      => Some(b"\x1b[B".to_vec()),
+        KeyCode::Right     => Some(b"\x1b[C".to_vec()),
+        KeyCode::Left      => Some(b"\x1b[D".to_vec()),
+        KeyCode::Home      => Some(b"\x1b[H".to_vec()),
+        KeyCode::End       => Some(b"\x1b[F".to_vec()),
+        KeyCode::PageUp    => Some(b"\x1b[5~".to_vec()),
+        KeyCode::PageDown  => Some(b"\x1b[6~".to_vec()),
+        KeyCode::Delete    => Some(b"\x1b[3~".to_vec()),
+        _ => None,
     }
 }
