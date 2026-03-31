@@ -276,7 +276,7 @@ async fn main() -> anyhow::Result<()> {
         tokio::select! {
             mcp_cmd = mcp_cmd_rx.recv() => {
                 if let Some(cmd) = mcp_cmd {
-                    handle_mcp_command(cmd, &mut app, &render_state, &notify).await;
+                    handle_mcp_command(cmd, &mut app, &render_state, &notify, input_tx.clone()).await;
                 }
                 continue;
             }
@@ -956,14 +956,14 @@ async fn main() -> anyhow::Result<()> {
                                     }
                                     AppAction::SplitH => {
                                         let new_pane_id = app.ids.next_pane();
-                                        let new_pane = ui::pane::Pane::new(new_pane_id, ui::pane::PaneKind::Editor);
+                                        let new_pane = ui::pane::Pane::new(new_pane_id, ui::pane::PaneKind::Editor { buffer_id: rmcore::ids::BufferId(0) });
                                         let mut state = render_state.write();
                                         let focused = state.layout.focused;
                                         state.layout.split(focused, ui::layout::SplitDir::Horizontal, new_pane);
                                     }
                                     AppAction::SplitV => {
                                         let new_pane_id = app.ids.next_pane();
-                                        let new_pane = ui::pane::Pane::new(new_pane_id, ui::pane::PaneKind::Editor);
+                                        let new_pane = ui::pane::Pane::new(new_pane_id, ui::pane::PaneKind::Editor { buffer_id: rmcore::ids::BufferId(0) });
                                         let mut state = render_state.write();
                                         let focused = state.layout.focused;
                                         state.layout.split(focused, ui::layout::SplitDir::Vertical, new_pane);
@@ -1479,7 +1479,12 @@ async fn main() -> anyhow::Result<()> {
                         }
                         EditorCommand::LspCodeAction => {
                             let actions = app.lsp_get_code_actions().await;
-                            let items: Vec<String> = actions.iter().map(|a| a.title.clone()).collect();
+                            let items: Vec<ui::widgets::quickfix::QuickfixEntry> = actions.iter().map(|a| ui::widgets::quickfix::QuickfixEntry {
+                                file: String::new(),
+                                line: 0,
+                                col: 0,
+                                message: a.title.clone(),
+                            }).collect();
                             app.code_actions = actions;
                             {
                                 let mut state = render_state.write();
@@ -1997,7 +2002,7 @@ async fn handle_palette_command(
     id: &str,
     app: &mut AppState,
     render_state: &Arc<RwLock<RenderState>>,
-    notify: &tokio::sync::Notify,
+    notify: &Arc<tokio::sync::Notify>,
     bus: &rmcore::bus::EventBus,
 ) {
     match id {
@@ -2231,7 +2236,8 @@ async fn handle_mcp_command(
     cmd: mcp::McpEditorCommand,
     app: &mut AppState,
     render_state: &Arc<RwLock<RenderState>>,
-    notify: &tokio::sync::Notify,
+    notify: &Arc<tokio::sync::Notify>,
+    input_tx: tokio::sync::broadcast::Sender<rmcore::event::AppEvent>,
 ) {
     use mcp::McpEditorCommand;
     match cmd {
