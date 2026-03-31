@@ -7,6 +7,7 @@ use ratatui::{
     widgets::Widget,
 };
 
+#[derive(Clone)]
 pub struct CmdLineState {
     pub input: String,
     pub cursor: usize,

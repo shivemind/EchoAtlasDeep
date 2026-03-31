@@ -140,6 +140,7 @@ async fn main() -> anyhow::Result<()> {
         agent_status_str: String::new(),
         // Phase 10 — File Tree, Tabs, Find/Replace, DAP, etc:
         file_tree_open: false,
+        file_tree_focused: false,
         file_tree_state: ui::widgets::file_tree::FileTreeState::new(
             &std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
         ),
@@ -359,8 +360,28 @@ async fn main() -> anyhow::Result<()> {
                     && key.modifiers.contains(KeyModifiers::CONTROL)
                 {
                     app.terminal_mode = !app.terminal_mode;
+                    app.file_tree_focused = false;
                     let mode_str = if app.terminal_mode { "TERMINAL" } else { "NORMAL" };
-                    render_state.write().mode = mode_str.to_string();
+                    let mut state = render_state.write();
+                    state.mode = mode_str.to_string();
+                    state.file_tree_focused = false;
+                    notify.notify_one();
+                    continue;
+                }
+
+                // Ctrl+; — open command line from any mode (even terminal / tree mode)
+                if key.code == KeyCode::Char(';')
+                    && key.modifiers.contains(KeyModifiers::CONTROL)
+                {
+                    app.terminal_mode = false;
+                    app.file_tree_focused = false;
+                    cmdline_state = CmdLineState::new();
+                    {
+                        let mut state = render_state.write();
+                        state.file_tree_focused = false;
+                        state.mode = "COMMAND".to_string();
+                        state.cmdline_is_active = true;
+                    }
                     notify.notify_one();
                     continue;
                 }
@@ -439,13 +460,22 @@ async fn main() -> anyhow::Result<()> {
                         continue;
                     }
                     // ── Phase 10 global keybinds ─────────────────────────────
-                    // Alt+e — toggle file tree sidebar
+                    // Alt+e — toggle file tree sidebar; focuses it on open
                     if key.code == KeyCode::Char('e') && key.modifiers.contains(KeyModifiers::ALT) {
                         app.file_tree_open = !app.file_tree_open;
+                        // Focus the tree when opening, unfocus when closing
+                        app.file_tree_focused = app.file_tree_open;
+                        if app.file_tree_open { app.terminal_mode = false; }
                         {
                             let mut state = render_state.write();
                             state.file_tree_open = app.file_tree_open;
-                            state.file_tree_state = ui::widgets::file_tree::FileTreeState::new(&app.workspace_root);
+                            state.file_tree_focused = app.file_tree_focused;
+                            if app.file_tree_open {
+                                state.file_tree_state = ui::widgets::file_tree::FileTreeState::new(&app.workspace_root);
+                                state.mode = "TREE".to_string();
+                            } else {
+                                state.mode = "NORMAL".to_string();
+                            }
                         }
                         notify.notify_one();
                         continue;
@@ -691,6 +721,65 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
 
+                // ── File tree keyboard navigation ─────────────────────────
+                if app.file_tree_focused && app.file_tree_open {
+                    use rmcore::event::KeyCode;
+                    match key.code {
+                        KeyCode::Char('j') | KeyCode::Down => {
+                            render_state.write().file_tree_state.move_down();
+                            notify.notify_one();
+                            continue;
+                        }
+                        KeyCode::Char('k') | KeyCode::Up => {
+                            render_state.write().file_tree_state.move_up();
+                            notify.notify_one();
+                            continue;
+                        }
+                        KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => {
+                            let action = {
+                                let state = render_state.read();
+                                state.file_tree_state.selected_path()
+                                    .map(|p| (p.to_path_buf(), p.is_dir()))
+                            };
+                            if let Some((path, is_dir)) = action {
+                                if is_dir {
+                                    render_state.write().file_tree_state.toggle_expand();
+                                } else {
+                                    // Open the file and return focus to editor
+                                    if app.open_file(&path).is_ok() {
+                                        let ed_display = app.make_editor_display();
+                                        let mut state = render_state.write();
+                                        state.editor_display = ed_display;
+                                        state.file_tree_focused = false;
+                                        state.mode = "NORMAL".to_string();
+                                    }
+                                    app.file_tree_focused = false;
+                                    app.terminal_mode = false;
+                                }
+                            }
+                            notify.notify_one();
+                            continue;
+                        }
+                        KeyCode::Char('h') | KeyCode::Left => {
+                            // Collapse selected dir (toggle_expand collapses if already expanded)
+                            render_state.write().file_tree_state.toggle_expand();
+                            notify.notify_one();
+                            continue;
+                        }
+                        KeyCode::Escape | KeyCode::Char('q') => {
+                            app.file_tree_focused = false;
+                            {
+                                let mut state = render_state.write();
+                                state.file_tree_focused = false;
+                                state.mode = "NORMAL".to_string();
+                            }
+                            notify.notify_one();
+                            continue;
+                        }
+                        _ => { continue; }
+                    }
+                }
+
                 // Route key through modal engine
                 let cmds = if let Some(ae) = &mut app.active_editor {
                     ae.modal.handle_key(&key)
@@ -766,29 +855,37 @@ async fn main() -> anyhow::Result<()> {
                             cmdline_state = CmdLineState::new();
                             let mut state = render_state.write();
                             state.cmdline_is_active = true;
+                            state.cmdline = Some(cmdline_state.clone());
                             needs_render = true;
                         }
                         EditorCommand::CmdInput(c) => {
                             cmdline_state.push(*c);
+                            render_state.write().cmdline = Some(cmdline_state.clone());
                             needs_render = true;
                         }
                         EditorCommand::CmdBackspace => {
                             cmdline_state.backspace();
+                            render_state.write().cmdline = Some(cmdline_state.clone());
                             needs_render = true;
                         }
                         EditorCommand::CmdHistoryUp => {
                             cmdline_state.history_up();
+                            render_state.write().cmdline = Some(cmdline_state.clone());
                             needs_render = true;
                         }
                         EditorCommand::CmdHistoryDown => {
                             cmdline_state.history_down();
+                            render_state.write().cmdline = Some(cmdline_state.clone());
                             needs_render = true;
                         }
                         EditorCommand::CmdConfirm => {
                             let cmd_str = cmdline_state.confirm();
-                            let mut state = render_state.write();
-                            state.cmdline_is_active = false;
-                            drop(state);
+                            {
+                                let mut state = render_state.write();
+                                state.cmdline_is_active = false;
+                                state.cmdline = None;
+                                state.mode = "NORMAL".to_string();
+                            }
                             if let Some(action) = app.process_cmdline(&cmd_str) {
                                 match action {
                                     AppAction::Quit | AppAction::ForceQuit => {
@@ -1066,6 +1163,8 @@ async fn main() -> anyhow::Result<()> {
                             cmdline_state.cancel();
                             let mut state = render_state.write();
                             state.cmdline_is_active = false;
+                            state.cmdline = None;
+                            state.mode = "NORMAL".to_string();
                             needs_render = true;
                         }
 
@@ -1769,10 +1868,16 @@ async fn handle_palette_command(
         }
         "file.tree" => {
             app.file_tree_open = !app.file_tree_open;
+            app.file_tree_focused = app.file_tree_open;
+            if app.file_tree_open { app.terminal_mode = false; }
             let mut state = render_state.write();
             state.file_tree_open = app.file_tree_open;
+            state.file_tree_focused = app.file_tree_focused;
             if app.file_tree_open {
                 state.file_tree_state = ui::widgets::file_tree::FileTreeState::new(&app.workspace_root);
+                state.mode = "TREE".to_string();
+            } else {
+                state.mode = "NORMAL".to_string();
             }
         }
         "file.find_replace" => {

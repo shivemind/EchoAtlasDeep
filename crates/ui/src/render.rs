@@ -130,6 +130,7 @@ pub struct RenderState {
     pub agent_status_str: String,
     // Phase 10 — File Tree, Tabs, Find/Replace, DAP, etc:
     pub file_tree_open: bool,
+    pub file_tree_focused: bool,
     pub file_tree_state: crate::widgets::file_tree::FileTreeState,
     pub tab_bar: crate::widgets::tab_bar::TabBarState,
     pub find_replace: crate::widgets::find_replace::FindReplaceState,
@@ -272,6 +273,7 @@ pub fn spawn_render_task(
             let editor_scroll = state_snap.editor_display.as_ref().map(|e| (e.scroll_row, e.scroll_col));
             let search_query = state_snap.search_query.clone();
             let cmdline_active = state_snap.cmdline_is_active;
+            let cmdline_snapshot = state_snap.cmdline.clone();
             let search_active = state_snap.search_is_active;
             let ai_status = state_snap.ai_status.clone();
             let model_picker_entries = state_snap.model_picker.as_ref().map(|e| e.clone());
@@ -314,6 +316,7 @@ pub fn spawn_render_task(
             let command_palette_open = state_snap.command_palette.open;
             // Phase 10 — open flags snapshot
             let file_tree_open = state_snap.file_tree_open;
+            let file_tree_focused = state_snap.file_tree_focused;
             let minimap_open = state_snap.minimap_open;
             let find_replace_open = state_snap.find_replace.open;
             let symbol_browser_open = state_snap.symbol_browser.open;
@@ -512,6 +515,43 @@ pub fn spawn_render_task(
                     }
                 }
 
+                // Render command line (above status bar) when active.
+                if cmdline_active {
+                    let cmdline_y = full.y + full.height.saturating_sub(2);
+                    let cmdline_area = ratatui::layout::Rect {
+                        x: full.x,
+                        y: cmdline_y,
+                        width: full.width,
+                        height: 1,
+                    };
+                    use crate::widgets::cmdline::CmdLineWidget;
+                    let default_cmd = CmdLineState::new();
+                    let cmd_state = cmdline_snapshot.as_ref().unwrap_or(&default_cmd);
+                    frame.render_widget(
+                        CmdLineWidget { state: cmd_state, search_mode: false, search_prefix: ':' },
+                        cmdline_area,
+                    );
+                } else if search_active {
+                    let search_y = full.y + full.height.saturating_sub(2);
+                    let search_area = ratatui::layout::Rect {
+                        x: full.x,
+                        y: search_y,
+                        width: full.width,
+                        height: 1,
+                    };
+                    use crate::widgets::cmdline::CmdLineWidget;
+                    let search_state = CmdLineState {
+                        input: search_query.clone(),
+                        cursor: search_query.len(),
+                        history: Vec::new(),
+                        history_idx: None,
+                    };
+                    frame.render_widget(
+                        CmdLineWidget { state: &search_state, search_mode: true, search_prefix: '/' },
+                        search_area,
+                    );
+                }
+
                 // Render status bar.
                 let cursor_pos = editor_cursor.unwrap_or((0, 0));
                 let backend_display = if !ai_status.is_empty() {
@@ -636,7 +676,7 @@ pub fn spawn_render_task(
                     let state_snap2 = state.read();
                     use crate::widgets::file_tree::FileTreeWidget;
                     frame.render_widget(
-                        FileTreeWidget { state: &state_snap2.file_tree_state, focused: false },
+                        FileTreeWidget { state: &state_snap2.file_tree_state, focused: file_tree_focused },
                         tree_area,
                     );
                 }

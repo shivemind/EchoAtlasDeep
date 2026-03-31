@@ -111,6 +111,7 @@ pub struct AppState {
     // Phase 10:
     pub file_tree: ui::widgets::file_tree::FileTreeState,
     pub file_tree_open: bool,
+    pub file_tree_focused: bool,
     pub tab_bar: ui::widgets::tab_bar::TabBarState,
     pub find_replace: ui::widgets::find_replace::FindReplaceState,
     pub symbol_browser: ui::widgets::symbol_browser::SymbolBrowserState,
@@ -242,6 +243,7 @@ impl AppState {
             // Phase 10:
             file_tree: ui::widgets::file_tree::FileTreeState::new(&workspace_root_p10),
             file_tree_open: false,
+            file_tree_focused: false,
             tab_bar: ui::widgets::tab_bar::TabBarState::new(),
             find_replace: ui::widgets::find_replace::FindReplaceState::new(),
             symbol_browser: ui::widgets::symbol_browser::SymbolBrowserState::new(),
