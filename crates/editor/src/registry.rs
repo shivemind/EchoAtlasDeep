@@ -42,6 +42,16 @@ impl BufferRegistry {
     pub fn ids(&self) -> Vec<BufferId> {
         self.buffers.keys().copied().collect()
     }
+
+    pub fn find_by_path(&self, path: &std::path::Path) -> Option<BufferId> {
+        for (id, buf_arc) in &self.buffers {
+            let buf = buf_arc.read();
+            if buf.path.as_deref() == Some(path) {
+                return Some(*id);
+            }
+        }
+        None
+    }
 }
 
 impl Default for BufferRegistry {

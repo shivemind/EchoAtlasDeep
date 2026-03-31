@@ -415,6 +415,24 @@ impl LspClient {
         Ok(serde_json::from_value(resp).unwrap_or_default())
     }
 
+    pub async fn code_actions(&self, uri: &str, line: u32, col: u32) -> anyhow::Result<Vec<CodeAction>> {
+        let params = json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": line, "character": col },
+                "end": { "line": line, "character": col }
+            },
+            "context": { "diagnostics": [] }
+        });
+        let result = self.request("textDocument/codeAction", params).await?;
+        if result.is_null() {
+            return Ok(vec![]);
+        }
+        // Code actions can be CodeAction or Command; parse as CodeAction list
+        let actions: Vec<serde_json::Value> = serde_json::from_value(result).unwrap_or_default();
+        Ok(actions.into_iter().filter_map(|v| serde_json::from_value(v).ok()).collect())
+    }
+
     pub async fn shutdown(&self) -> anyhow::Result<()> {
         let _ = self.request("shutdown", json!(null)).await;
         let _ = self.notify("exit", json!(null)).await;

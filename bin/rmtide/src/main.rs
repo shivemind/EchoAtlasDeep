@@ -229,6 +229,28 @@ async fn main() -> anyhow::Result<()> {
     let mut search_buf = String::new();
     let mut search_forward = true;
 
+    // Pending approval responder — set when an approval request arrives from the agent.
+    let mut pending_approval_responder: Option<tokio::sync::oneshot::Sender<ai::approval::ApprovalDecision>> = None;
+
+    // Phase 8 — approval queue bridge: forward requests from the parking_lot-protected
+    // receiver to a tokio channel so the main select! loop can await on it safely.
+    let (approval_bridge_tx, mut approval_bridge_rx) =
+        tokio::sync::mpsc::unbounded_channel::<ai::approval::ApprovalRequest>();
+    {
+        let aq = app.approval_queue.clone();
+        tokio::spawn(async move {
+            loop {
+                // Poll without holding the parking_lot lock across an await boundary.
+                let maybe_req = aq.rx.lock().try_recv().ok();
+                if let Some(req) = maybe_req {
+                    if approval_bridge_tx.send(req).is_err() { break; }
+                } else {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            }
+        });
+    }
+
     // Phase 11 — subscribe to task runner log channel before the main loop
     let mut log_rx = app.task_runner.subscribe_logs();
 
@@ -261,6 +283,15 @@ async fn main() -> anyhow::Result<()> {
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                     Err(_) => {}
                 }
+                continue;
+            }
+            // ── Phase 8: poll approval queue ────────────────────────────────
+            Some(req) = approval_bridge_rx.recv() => {
+                let mut state = render_state.write();
+                state.approval_modal.set_pending(&req);
+                drop(state);
+                pending_approval_responder = Some(req.responder);
+                notify.notify_one();
                 continue;
             }
             // ── Phase 9: drain agent updates ────────────────────────────────
@@ -331,6 +362,7 @@ async fn main() -> anyhow::Result<()> {
             event_result = event_rx.recv() => match event_result {
             Ok(AppEvent::Quit) => {
                 info!("Quit received — shutting down");
+                app.workspace_save();
                 break;
             }
             Ok(AppEvent::KeyInput(key)) => {
@@ -746,9 +778,13 @@ async fn main() -> anyhow::Result<()> {
                                     render_state.write().file_tree_state.toggle_expand();
                                 } else {
                                     // Open the file and return focus to editor
-                                    if app.open_file(&path).is_ok() {
+                                    if let Ok(buf_id) = app.open_file(&path) {
+                                        let tab_name = path.file_name()
+                                            .map(|n| n.to_string_lossy().into_owned())
+                                            .unwrap_or_else(|| path.to_string_lossy().into_owned());
                                         let ed_display = app.make_editor_display();
                                         let mut state = render_state.write();
+                                        state.tab_bar.add_tab(buf_id.0 as usize, &tab_name);
                                         state.editor_display = ed_display;
                                         state.file_tree_focused = false;
                                         state.mode = "NORMAL".to_string();
@@ -836,7 +872,12 @@ async fn main() -> anyhow::Result<()> {
                                     .and_then(|fp| fp.selected_path().cloned())
                             };
                             if let Some(path) = path {
-                                let _ = app.open_file(&path);
+                                if let Ok(buf_id) = app.open_file(&path) {
+                                    let tab_name = path.file_name()
+                                        .map(|n| n.to_string_lossy().into_owned())
+                                        .unwrap_or_else(|| path.to_string_lossy().into_owned());
+                                    render_state.write().tab_bar.add_tab(buf_id.0 as usize, &tab_name);
+                                }
                             }
                             let mut state = render_state.write();
                             state.file_picker = None;
@@ -886,16 +927,36 @@ async fn main() -> anyhow::Result<()> {
                                 state.cmdline = None;
                                 state.mode = "NORMAL".to_string();
                             }
+                            // LSP rename intercept — if pending, treat input as new name
+                            if app.lsp_rename_pending {
+                                app.lsp_rename_pending = false;
+                                if !cmd_str.trim().is_empty() {
+                                    let new_name = cmd_str.trim().to_string();
+                                    let applied = app.lsp_rename(&new_name).await;
+                                    let msg = if applied { format!("[LSP] Renamed to '{new_name}'") } else { "[LSP] Rename failed".to_string() };
+                                    render_state.write().ai_status = msg;
+                                    needs_render = true;
+                                }
+                                continue;
+                            }
                             if let Some(action) = app.process_cmdline(&cmd_str) {
                                 match action {
                                     AppAction::Quit | AppAction::ForceQuit => {
                                         let _ = bus.sender().send(AppEvent::Quit);
                                     }
                                     AppAction::SplitH => {
-                                        // TODO: split layout
+                                        let new_pane_id = app.ids.next_pane();
+                                        let new_pane = ui::pane::Pane::new(new_pane_id, ui::pane::PaneKind::Editor);
+                                        let mut state = render_state.write();
+                                        let focused = state.layout.focused;
+                                        state.layout.split(focused, ui::layout::SplitDir::Horizontal, new_pane);
                                     }
                                     AppAction::SplitV => {
-                                        // TODO: split layout
+                                        let new_pane_id = app.ids.next_pane();
+                                        let new_pane = ui::pane::Pane::new(new_pane_id, ui::pane::PaneKind::Editor);
+                                        let mut state = render_state.write();
+                                        let focused = state.layout.focused;
+                                        state.layout.split(focused, ui::layout::SplitDir::Vertical, new_pane);
                                     }
                                     AppAction::OpenFilePicker => {
                                         app.file_picker_open = true;
@@ -1376,10 +1437,48 @@ async fn main() -> anyhow::Result<()> {
                             app.completion_visible = false;
                             needs_render = true;
                         }
-                        EditorCommand::LspRename | EditorCommand::LspCodeAction
-                        | EditorCommand::LspDiagNext | EditorCommand::LspDiagPrev => {
-                            // Stub — mark as handled
-                            needs_render = false;
+                        EditorCommand::LspRename => {
+                            // Enter rename mode: prompt for the new name via command line
+                            app.lsp_rename_pending = true;
+                            app.lsp_rename_new_name.clear();
+                            cmdline_state = CmdLineState::new();
+                            {
+                                let mut state = render_state.write();
+                                state.cmdline_is_active = true;
+                                state.cmdline = Some(cmdline_state.clone());
+                                state.mode = "RENAME".to_string();
+                                state.ai_status = "[LSP] Enter new name, <CR> to confirm".to_string();
+                            }
+                            needs_render = true;
+                        }
+                        EditorCommand::LspCodeAction => {
+                            let actions = app.lsp_get_code_actions().await;
+                            let items: Vec<String> = actions.iter().map(|a| a.title.clone()).collect();
+                            app.code_actions = actions;
+                            {
+                                let mut state = render_state.write();
+                                state.quickfix = items;
+                                state.ai_status = "[LSP] Code actions — select with j/k, Enter to apply".to_string();
+                            }
+                            needs_render = true;
+                        }
+                        EditorCommand::LspDiagNext => {
+                            if let Some((line, col)) = app.lsp_diag_jump(true).await {
+                                let ed_display = app.make_editor_display();
+                                let mut state = render_state.write();
+                                state.editor_display = ed_display;
+                                state.ai_status = format!("[LSP] Diagnostic at {}:{}", line + 1, col + 1);
+                            }
+                            needs_render = true;
+                        }
+                        EditorCommand::LspDiagPrev => {
+                            if let Some((line, col)) = app.lsp_diag_jump(false).await {
+                                let ed_display = app.make_editor_display();
+                                let mut state = render_state.write();
+                                state.editor_display = ed_display;
+                                state.ai_status = format!("[LSP] Diagnostic at {}:{}", line + 1, col + 1);
+                            }
+                            needs_render = true;
                         }
 
                         // ── AI commands (Phase 4) ────────────────────────────
@@ -1739,12 +1838,43 @@ async fn main() -> anyhow::Result<()> {
                             render_state.write().offline_mode = new_mode;
                             needs_render = true;
                         }
-                        EditorCommand::ApprovalApprove
-                        | EditorCommand::ApprovalDeny
-                        | EditorCommand::ApprovalApproveAll
-                        | EditorCommand::ApprovalDenyAll => {
-                            // Stub — approval responses handled by approval queue consumer
-                            needs_render = false;
+                        EditorCommand::ApprovalApprove => {
+                            if let Some(responder) = pending_approval_responder.take() {
+                                let _ = responder.send(ai::approval::ApprovalDecision::Approve);
+                                let mut state = render_state.write();
+                                state.approval_modal.record_decision("approved", "action", "agent");
+                                state.approval_modal.pending = None;
+                            }
+                            needs_render = true;
+                        }
+                        EditorCommand::ApprovalDeny => {
+                            if let Some(responder) = pending_approval_responder.take() {
+                                let _ = responder.send(ai::approval::ApprovalDecision::Deny);
+                                let mut state = render_state.write();
+                                state.approval_modal.record_decision("denied", "action", "agent");
+                                state.approval_modal.pending = None;
+                            }
+                            needs_render = true;
+                        }
+                        EditorCommand::ApprovalApproveAll => {
+                            if let Some(responder) = pending_approval_responder.take() {
+                                let _ = responder.send(ai::approval::ApprovalDecision::ApproveAll);
+                                let mut state = render_state.write();
+                                state.approval_modal.approve_all = true;
+                                state.approval_modal.record_decision("approve-all", "action", "agent");
+                                state.approval_modal.pending = None;
+                            }
+                            needs_render = true;
+                        }
+                        EditorCommand::ApprovalDenyAll => {
+                            if let Some(responder) = pending_approval_responder.take() {
+                                let _ = responder.send(ai::approval::ApprovalDecision::DenyAll);
+                                let mut state = render_state.write();
+                                state.approval_modal.approve_all = false;
+                                state.approval_modal.record_decision("deny-all", "action", "agent");
+                                state.approval_modal.pending = None;
+                            }
+                            needs_render = true;
                         }
 
                         // ── General editor commands ───────────────────────────
@@ -1768,6 +1898,7 @@ async fn main() -> anyhow::Result<()> {
                     let model_picker_open = app.model_picker_open;
                     let spend_status = app.spend_status();
                     let offline_mode = app.offline_mode;
+                    let git_branch = app.git_branch();
                     let mut state = render_state.write();
                     state.editor_display = ed_display;
                     state.mode = mode_str;
@@ -1776,6 +1907,7 @@ async fn main() -> anyhow::Result<()> {
                     state.model_picker_selected = model_picker_sel;
                     state.spend_status = spend_status;
                     state.offline_mode = offline_mode;
+                    state.git_branch_name = git_branch;
                     if !model_picker_open {
                         state.model_picker = None;
                     }
@@ -2068,8 +2200,23 @@ async fn handle_mcp_command(
             }
         }
         McpEditorCommand::ApplyEdit { path, start_line, start_col, end_line, end_col, new_text } => {
-            // Stub: apply the edit to the buffer if the file is open
-            // Full implementation would locate the buffer by path and apply the range edit
+            use lsp::types::{WorkspaceEdit, TextEdit, Range, Position};
+            let uri = format!("file://{}", path);
+            let edit = WorkspaceEdit {
+                changes: Some(std::collections::HashMap::from([(
+                    uri,
+                    vec![TextEdit {
+                        range: Range {
+                            start: Position { line: start_line as u32, character: start_col as u32 },
+                            end: Position { line: end_line as u32, character: end_col as u32 },
+                        },
+                        new_text,
+                    }],
+                )])),
+            };
+            app.apply_workspace_edit(edit);
+            let ed_display = app.make_editor_display();
+            render_state.write().editor_display = ed_display;
             notify.notify_one();
         }
         McpEditorCommand::RunCommand { command } => {

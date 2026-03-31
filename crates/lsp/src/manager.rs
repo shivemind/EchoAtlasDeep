@@ -291,6 +291,45 @@ impl LspManager {
         vec![]
     }
 
+    pub async fn rename(&self, path: &Path, line: u32, col: u32, new_name: &str) -> Option<WorkspaceEdit> {
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if let Some(lang) = language_id_for_ext(ext) {
+            if let Some(client) = self.client_for(lang) {
+                let uri = path_to_uri(path);
+                return client.rename(&uri, line, col, new_name).await.ok().flatten();
+            }
+        }
+        None
+    }
+
+    pub async fn code_actions(&self, path: &Path, line: u32, col: u32) -> Vec<CodeAction> {
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if let Some(lang) = language_id_for_ext(ext) {
+            if let Some(client) = self.client_for(lang) {
+                let uri = path_to_uri(path);
+                return client.code_actions(&uri, line, col).await.unwrap_or_default();
+            }
+        }
+        vec![]
+    }
+
+    pub fn diagnostics_near_cursor(&self, path: &Path, line: u32) -> Vec<Diagnostic> {
+        let uri = path_to_uri(path);
+        let all = self.diagnostics.get(&uri).map(|f| f.items).unwrap_or_default();
+        // Return diagnostics on the current line or adjacent lines
+        all.into_iter().filter(|d| {
+            let dline = d.range.start.line;
+            dline == line || dline == line.saturating_sub(1) || dline == line + 1
+        }).collect()
+    }
+
+    pub fn all_diagnostics_sorted(&self, path: &Path) -> Vec<Diagnostic> {
+        let uri = path_to_uri(path);
+        let mut all = self.diagnostics.get(&uri).map(|f| f.items).unwrap_or_default();
+        all.sort_by_key(|d| (d.range.start.line, d.range.start.character));
+        all
+    }
+
     pub fn get_diagnostics(&self, path: &Path) -> Vec<Diagnostic> {
         let uri = path_to_uri(path);
         self.diagnostics

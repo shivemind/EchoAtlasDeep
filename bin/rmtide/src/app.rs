@@ -112,6 +112,11 @@ pub struct AppState {
     pub file_tree: ui::widgets::file_tree::FileTreeState,
     pub file_tree_open: bool,
     pub file_tree_focused: bool,
+    pub file_history: Vec<std::path::PathBuf>,  // recently opened files
+    // LSP rename state
+    pub lsp_rename_pending: bool,
+    pub lsp_rename_new_name: String,
+    pub diag_jump_dir: bool,                     // true=forward, false=backward
     pub tab_bar: ui::widgets::tab_bar::TabBarState,
     pub find_replace: ui::widgets::find_replace::FindReplaceState,
     pub symbol_browser: ui::widgets::symbol_browser::SymbolBrowserState,
@@ -159,6 +164,8 @@ pub struct AppState {
     // Terminal emulator
     pub terminal_session: Option<std::sync::Arc<parking_lot::Mutex<terminal::session::PtySession>>>,
     pub terminal_mode: bool,
+    pub extra_terminal_sessions: Vec<(rmcore::ids::SessionId, std::sync::Arc<parking_lot::Mutex<terminal::session::PtySession>>)>,
+    pub active_terminal_idx: usize,  // 0 = main session
 }
 
 impl AppState {
@@ -244,6 +251,10 @@ impl AppState {
             file_tree: ui::widgets::file_tree::FileTreeState::new(&workspace_root_p10),
             file_tree_open: false,
             file_tree_focused: false,
+            file_history: Vec::new(),
+            lsp_rename_pending: false,
+            lsp_rename_new_name: String::new(),
+            diag_jump_dir: true,
             tab_bar: ui::widgets::tab_bar::TabBarState::new(),
             find_replace: ui::widgets::find_replace::FindReplaceState::new(),
             symbol_browser: ui::widgets::symbol_browser::SymbolBrowserState::new(),
@@ -307,6 +318,8 @@ impl AppState {
             // Terminal emulator — populated after spawn in main.rs
             terminal_session: None,
             terminal_mode: false,
+            extra_terminal_sessions: Vec::new(),
+            active_terminal_idx: 0,
         }
     }
 
@@ -413,6 +426,23 @@ impl AppState {
         self.git.current_branch()
     }
 
+    /// Get staged diff text for AI commit message generation.
+    pub fn get_staged_diff(&self) -> Option<String> {
+        let root = self.git.repo_root.as_ref()?;
+        let output = std::process::Command::new("git")
+            .args(["diff", "--staged", "--stat", "-p", "--no-color"])
+            .current_dir(root)
+            .output()
+            .ok()?;
+        let text = String::from_utf8_lossy(&output.stdout).into_owned();
+        if text.is_empty() { None } else { Some(text) }
+    }
+
+    pub fn git_branch_for_status(&self) -> Option<String> {
+        let b = self.git.current_branch();
+        if b.is_empty() { None } else { Some(b) }
+    }
+
     /// Refresh git status and return clone.
     pub fn git_refresh_status(&self) -> Option<git::RepoStatus> {
         self.git.refresh_status();
@@ -467,11 +497,14 @@ impl AppState {
 
     /// Open a file into a new buffer. Returns the new BufferId.
     pub fn open_file(&mut self, path: &std::path::Path) -> anyhow::Result<BufferId> {
-        let data = std::fs::read(path)?;
-        let id = self
-            .buffers
-            .new_buffer_from_file(path.to_path_buf(), data);
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let data = std::fs::read(&canonical)?;
+        let id = self.buffers.new_buffer_from_file(canonical.clone(), data);
         self.active_editor = Some(ActiveEditor::new(id));
+        // Track history (keep last 20 unique entries)
+        self.file_history.retain(|p| p != &canonical);
+        self.file_history.insert(0, canonical);
+        self.file_history.truncate(20);
         Ok(id)
     }
 
@@ -601,6 +634,190 @@ impl AppState {
             buf.insert(start_off, &edit.new_text);
         }
         buf.dirty = true;
+    }
+
+    /// LSP rename — returns Ok(true) if edit was applied.
+    pub async fn lsp_rename(&mut self, new_name: &str) -> bool {
+        let (path, line, col) = match self.cursor_context() {
+            Some(x) => x,
+            None => return false,
+        };
+        let edit = self.lsp.rename(&path, line as u32, col as u32, new_name).await;
+        if let Some(workspace_edit) = edit {
+            self.apply_workspace_edit(workspace_edit);
+            return true;
+        }
+        false
+    }
+
+    /// Apply a WorkspaceEdit from LSP (rename, code action, etc.).
+    pub fn apply_workspace_edit(&mut self, edit: lsp::types::WorkspaceEdit) {
+        for (uri, text_edits) in edit.changes.unwrap_or_default() {
+            let path = lsp::types::uri_to_path(&uri);
+            // If this file is currently open, apply in-buffer
+            let buf_id = self.buffers.find_by_path(&path);
+            if let Some(id) = buf_id {
+                if let Some(buf_arc) = self.buffers.get(id) {
+                    let mut sorted = text_edits;
+                    sorted.sort_by(|a, b| {
+                        b.range.start.line.cmp(&a.range.start.line)
+                            .then(b.range.start.character.cmp(&a.range.start.character))
+                    });
+                    let mut buf = buf_arc.write();
+                    for edit in sorted {
+                        let start_off = buf.text.line_col_to_offset(
+                            edit.range.start.line as usize,
+                            edit.range.start.character as usize,
+                        );
+                        let end_off = buf.text.line_col_to_offset(
+                            edit.range.end.line as usize,
+                            edit.range.end.character as usize,
+                        );
+                        if start_off < end_off {
+                            buf.delete(start_off, end_off);
+                        }
+                        buf.insert(start_off, &edit.new_text);
+                    }
+                    buf.dirty = true;
+                }
+            } else {
+                // File not open — apply directly on disk
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    let mut lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
+                    let mut sorted = text_edits;
+                    sorted.sort_by(|a, b| {
+                        b.range.start.line.cmp(&a.range.start.line)
+                            .then(b.range.start.character.cmp(&a.range.start.character))
+                    });
+                    for edit_item in sorted {
+                        let sl = edit_item.range.start.line as usize;
+                        let sc = edit_item.range.start.character as usize;
+                        let el = edit_item.range.end.line as usize;
+                        let ec = edit_item.range.end.character as usize;
+                        if sl < lines.len() {
+                            if sl == el {
+                                let line = &lines[sl];
+                                let chars: Vec<char> = line.chars().collect();
+                                let before: String = chars[..sc.min(chars.len())].iter().collect();
+                                let after: String = chars[ec.min(chars.len())..].iter().collect();
+                                lines[sl] = format!("{}{}{}", before, edit_item.new_text, after);
+                            }
+                        }
+                    }
+                    let _ = std::fs::write(&path, lines.join("\n"));
+                }
+            }
+        }
+    }
+
+    /// Jump cursor to next/previous LSP diagnostic.
+    pub async fn lsp_diag_jump(&mut self, forward: bool) -> Option<(usize, usize)> {
+        let (path, cur_line, cur_col) = self.cursor_context()?;
+        let all = self.lsp.all_diagnostics_sorted(&path);
+        if all.is_empty() {
+            return None;
+        }
+        let (line, col) = if forward {
+            // Find first diag after cursor
+            all.iter()
+                .find(|d| {
+                    let dl = d.range.start.line as usize;
+                    let dc = d.range.start.character as usize;
+                    dl > cur_line || (dl == cur_line && dc > cur_col)
+                })
+                .map(|d| (d.range.start.line as usize, d.range.start.character as usize))
+                .or_else(|| {
+                    // Wrap around to first
+                    all.first().map(|d| (d.range.start.line as usize, d.range.start.character as usize))
+                })?
+        } else {
+            // Find last diag before cursor
+            all.iter()
+                .rev()
+                .find(|d| {
+                    let dl = d.range.start.line as usize;
+                    let dc = d.range.start.character as usize;
+                    dl < cur_line || (dl == cur_line && dc < cur_col)
+                })
+                .map(|d| (d.range.start.line as usize, d.range.start.character as usize))
+                .or_else(|| {
+                    // Wrap around to last
+                    all.last().map(|d| (d.range.start.line as usize, d.range.start.character as usize))
+                })?
+        };
+        if let Some(ae) = &mut self.active_editor {
+            ae.view.cursor.line = line;
+            ae.view.cursor.col = col;
+        }
+        Some((line, col))
+    }
+
+    /// Fetch code actions at cursor position.
+    pub async fn lsp_get_code_actions(&mut self) -> Vec<lsp::types::CodeAction> {
+        let (path, line, col) = match self.cursor_context() {
+            Some(x) => x,
+            None => return vec![],
+        };
+        self.lsp.code_actions(&path, line as u32, col as u32).await
+    }
+
+    /// Generate an AI commit message from git diff.
+    pub async fn ai_generate_commit_msg(&self) -> Option<String> {
+        let diff = self.get_staged_diff()?;
+        if diff.is_empty() {
+            return None;
+        }
+        let messages = ai::EditorContext::commit_prompt(&diff);
+        let backend = self.ai.get_active()?;
+        let opts = ai::CompletionOptions {
+            max_tokens: Some(256),
+            temperature: Some(0.3),
+            ..Default::default()
+        };
+        let result = backend.complete(messages, opts).await.ok()?;
+        // Extract first line as subject, trim whitespace
+        let subject = result.lines()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("Update code")
+            .trim()
+            .trim_matches('"')
+            .to_string();
+        Some(subject)
+    }
+
+    /// Save workspace state (open files, cursor positions) to disk.
+    pub fn workspace_save(&self) {
+        let data_dir = dirs::data_local_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("rmtide");
+        let _ = std::fs::create_dir_all(&data_dir);
+        let session_file = data_dir.join("session.json");
+        let files: Vec<String> = self.file_history.iter()
+            .take(10)
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        let json = serde_json::json!({ "recent_files": files });
+        let _ = std::fs::write(&session_file, json.to_string());
+    }
+
+    /// Load workspace state from disk. Returns list of recent file paths.
+    pub fn workspace_load_recent() -> Vec<std::path::PathBuf> {
+        let session_file = dirs::data_local_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("rmtide")
+            .join("session.json");
+        if let Ok(text) = std::fs::read_to_string(&session_file) {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+                if let Some(arr) = json["recent_files"].as_array() {
+                    return arr.iter()
+                        .filter_map(|v| v.as_str())
+                        .map(|s| std::path::PathBuf::from(s))
+                        .filter(|p| p.exists())
+                        .collect();
+                }
+            }
+        }
+        vec![]
     }
 
     /// Returns `(path, cursor_line, cursor_col)` for the active editor.

@@ -326,6 +326,7 @@ pub fn spawn_render_task(
             let clipboard_picker_open = state_snap.clipboard_picker.open;
             let session_picker_open = state_snap.session_picker.open;
             let tab_bar_has_tabs = !state_snap.tab_bar.tabs.is_empty();
+            let git_branch_name = state_snap.git_branch_name.clone();
 
             drop(state_snap);
 
@@ -559,11 +560,12 @@ pub fn spawn_render_task(
                 } else {
                     backend.clone()
                 };
+                let branch_display = if git_branch_name.is_empty() { None } else { Some(git_branch_name.as_str()) };
                 frame.render_widget(
                     StatusBar {
                         mode: &mode,
                         file_name: editor_file.as_deref(),
-                        branch: None,
+                        branch: branch_display,
                         backend: &backend_display,
                         cursor_pos: (cursor_pos.0, cursor_pos.1),
                         is_modified: editor_dirty,
