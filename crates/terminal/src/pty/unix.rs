@@ -17,7 +17,7 @@ pub struct Pty {
 
 impl Pty {
     pub async fn spawn(config: PtyConfig) -> Result<Self> {
-        let winsize = libc::winsize {
+        let mut winsize = libc::winsize {
             ws_row: config.size.rows,
             ws_col: config.size.cols,
             ws_xpixel: config.size.pixel_width,
@@ -33,7 +33,7 @@ impl Pty {
                 &mut slave_fd,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
-                &winsize as *const libc::winsize,
+                &mut winsize as *mut libc::winsize,
             )
         };
         if ret != 0 {
@@ -113,7 +113,7 @@ impl Pty {
 
 impl PtyHandle for Pty {
     fn resize(&self, size: PtySize) -> Result<()> {
-        let winsize = libc::winsize {
+        let mut winsize = libc::winsize {
             ws_row: size.rows,
             ws_col: size.cols,
             ws_xpixel: size.pixel_width,
@@ -123,7 +123,7 @@ impl PtyHandle for Pty {
             libc::ioctl(
                 self.master_fd,
                 libc::TIOCSWINSZ,
-                &winsize as *const libc::winsize,
+                &mut winsize as *mut libc::winsize,
             )
         };
         if ret != 0 {
