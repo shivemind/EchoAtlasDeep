@@ -196,6 +196,16 @@ async fn main() -> anyhow::Result<()> {
     // ── App state ────────────────────────────────────────────────────────────
     let mut app = AppState::new(config);
 
+    // ── Workspace session restore ─────────────────────────────────────────────
+    // Populate file_history from last session (files are not auto-opened,
+    // just available for quick-open in the file picker).
+    {
+        let recent = AppState::workspace_load_recent();
+        for p in recent {
+            app.file_history.push(p);
+        }
+    }
+
     // ── Terminal emulator ────────────────────────────────────────────────────
     {
         let pty_config = terminal::pty::PtyConfig::default();
@@ -2047,6 +2057,30 @@ async fn handle_palette_command(
         "git.commit" => {
             app.commit_composer_open = !app.commit_composer_open;
             render_state.write().commit_composer.open = app.commit_composer_open;
+            // If opening the composer, kick off AI commit message generation in background
+            if app.commit_composer_open {
+                let rs = render_state.clone();
+                let n = notify.clone();
+                let ai_backend = app.ai.get_active();
+                let diff = app.get_staged_diff();
+                tokio::spawn(async move {
+                    if let (Some(backend), Some(diff_text)) = (ai_backend, diff) {
+                        let messages = ai::EditorContext::commit_prompt(&diff_text);
+                        let opts = ai::CompletionOptions { max_tokens: Some(256), temperature: Some(0.3), ..Default::default() };
+                        if let Ok(result) = backend.complete(messages, opts).await {
+                            let subject = result.lines()
+                                .find(|l| !l.trim().is_empty())
+                                .unwrap_or("Update code")
+                                .trim().trim_matches('"').to_string();
+                            let mut state = rs.write();
+                            state.commit_composer.draft = subject;
+                            state.commit_composer.cursor_pos = state.commit_composer.draft.len();
+                            drop(state);
+                            n.notify_one();
+                        }
+                    }
+                });
+            }
         }
         "ai.agent" => {
             app.agent_panel_open = !app.agent_panel_open;
